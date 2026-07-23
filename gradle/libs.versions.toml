@@ -1,0 +1,23 @@
+[versions]
+paper = "1.20.6-R0.1-SNAPSHOT"
+velocity = "3.4.0-SNAPSHOT"
+jackson = "3.2.0"
+lettuce = "7.6.0.RELEASE"
+hikari = "7.0.2"
+postgresql = "42.7.11"
+mariadb = "3.5.9"
+junit = "6.1.0"
+testcontainers = "2.0.5"
+
+[libraries]
+paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
+velocity-api = { module = "com.velocitypowered:velocity-api", version.ref = "velocity" }
+jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
+lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
+hikari = { module = "com.zaxxer:HikariCP", version.ref = "hikari" }
+postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+mariadb = { module = "org.mariadb.jdbc:mariadb-java-client", version.ref = "mariadb" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
+testcontainers-junit-jupiter = { module = "org.testcontainers:testcontainers-junit-jupiter", version.ref = "testcontainers" }

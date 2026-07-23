@@ -26,3 +26,16 @@ jobs:
 
       - name: Build
         run: ./gradlew build --no-daemon
+
+      - name: Run Redis integration tests
+        run: ./gradlew integrationTest --no-daemon
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: warn

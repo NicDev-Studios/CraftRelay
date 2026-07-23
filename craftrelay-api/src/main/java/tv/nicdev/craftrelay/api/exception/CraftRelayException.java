@@ -1,11 +1,15 @@
 package tv.nicdev.craftrelay.api.exception;
 
+import java.io.Serial;
 import java.util.Objects;
 
 /**
  * Base class for failures reported by the public CraftRelay API.
  */
 public class CraftRelayException extends RuntimeException {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     /**
      * Creates an exception with a descriptive message.

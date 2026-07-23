@@ -1,9 +1,14 @@
 package tv.nicdev.craftrelay.api.exception;
 
+import java.io.Serial;
+
 /**
  * Indicates that the local CraftRelay API is not available for an operation.
  */
 public final class ApiUnavailableException extends CraftRelayException {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     /**
      * Creates an API-unavailable failure.

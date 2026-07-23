@@ -9,5 +9,8 @@ dependencies {
 }
 
 tasks.withType<Javadoc>().configureEach {
-    exclude("tv/nicdev/craftrelay/common/internal/**")
+    exclude(
+        "tv/nicdev/craftrelay/common/internal/**",
+        "tv/nicdev/craftrelay/common/transport/**",
+    )
 }

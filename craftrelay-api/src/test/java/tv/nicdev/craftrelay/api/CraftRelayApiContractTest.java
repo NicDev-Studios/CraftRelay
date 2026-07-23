@@ -13,8 +13,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
-import tv.nicdev.craftrelay.api.model.NetworkInstance;
-import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 
 class CraftRelayApiContractTest {
@@ -61,11 +59,5 @@ class CraftRelayApiContractTest {
         ParameterizedType future = (ParameterizedType) method.getGenericReturnType();
         ParameterizedType payload = (ParameterizedType) future.getActualTypeArguments()[0];
         assertEquals(expectedPayload, payload.getRawType());
-    }
-
-    @SuppressWarnings("unused")
-    private record CompileTimeContract(
-            CompletableFuture<Collection<NetworkInstance>> instances,
-            CompletableFuture<Optional<NetworkPlayer>> player) {
     }
 }

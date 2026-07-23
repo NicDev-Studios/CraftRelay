@@ -1,4 +1,4 @@
-# CraftRelayy
+# CraftRelay
 
 A lightweight, modular, and high-performance network synchronization framework for Minecraft proxies and servers.
 

@@ -25,11 +25,6 @@ updates:
         patterns:
           - "*"
 
-    ignore:
-      - dependency-name: "org.jetbrains.kotlin:*"
-        update-types:
-          - "version-update:semver-major"
-
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

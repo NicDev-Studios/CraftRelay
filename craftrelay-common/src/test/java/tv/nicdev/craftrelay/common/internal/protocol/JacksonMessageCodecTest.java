@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 NicDev-Studios
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package tv.nicdev.craftrelay.common.internal.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -59,10 +74,10 @@ class JacksonMessageCodecTest {
                                     Optional.of(CORRELATION_ID)));
 
             assertEquals(message, decoded.message());
-            assertEquals(MESSAGE_ID, decoded.envelope().messageId());
-            assertEquals(NOW, decoded.envelope().createdAt());
-            assertEquals(Optional.of(CORRELATION_ID), decoded.envelope().correlationId());
-            assertEquals("proxy-eu-1", decoded.envelope().sourceInstance());
+            assertEquals(MESSAGE_ID, decoded.messageId());
+            assertEquals(NOW, decoded.createdAt());
+            assertEquals(Optional.of(CORRELATION_ID), decoded.correlationId());
+            assertEquals("proxy-eu-1", decoded.sourceInstance());
         }
     }
 
@@ -84,7 +99,7 @@ class JacksonMessageCodecTest {
                             target,
                             new GlobalBroadcastMessage("hello"),
                             Optional.empty());
-            assertEquals(target, codec.decode(encoded).envelope().target());
+            assertEquals(target, codec.decode(encoded).target());
         }
     }
 
@@ -201,7 +216,7 @@ class JacksonMessageCodecTest {
         DecodedMessage decoded =
                 codec.decode(withoutCorrelationId.getBytes(StandardCharsets.UTF_8));
 
-        assertEquals(Optional.empty(), decoded.envelope().correlationId());
+        assertEquals(Optional.empty(), decoded.correlationId());
         assertEquals(new GlobalBroadcastMessage("hello"), decoded.message());
     }
 

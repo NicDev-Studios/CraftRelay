@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 NicDev-Studios
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package tv.nicdev.craftrelay.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -10,6 +25,7 @@ import eu.rekawek.toxiproxy.ToxiproxyClient;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -27,6 +43,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.toxiproxy.ToxiproxyContainer;
 import org.testcontainers.utility.DockerImageName;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage;
+import tv.nicdev.craftrelay.api.message.PlayerLocationRequest;
+import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
+import tv.nicdev.craftrelay.api.target.NetworkTargets;
+import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimes;
 import tv.nicdev.craftrelay.common.transport.TransportState;
 import tv.nicdev.craftrelay.transport.redis.LettuceRedisTransport;
 import tv.nicdev.craftrelay.transport.redis.RedisTransportConfig;
@@ -55,6 +79,7 @@ class RedisTransportIntegrationTest {
     private static Proxy redisProxy;
 
     private final List<LettuceRedisTransport> transports = new CopyOnWriteArrayList<>();
+    private final List<MessagingRuntime> runtimes = new CopyOnWriteArrayList<>();
 
     @BeforeAll
     static void createRedisProxy() throws IOException {
@@ -66,11 +91,166 @@ class RedisTransportIntegrationTest {
 
     @AfterEach
     void closeTransports() {
+        CompletableFuture.allOf(runtimes.stream()
+                        .map(MessagingRuntime::close)
+                        .toArray(CompletableFuture[]::new))
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
         CompletableFuture.allOf(transports.stream()
                         .map(LettuceRedisTransport::close)
                         .toArray(CompletableFuture[]::new))
                 .orTimeout(10, TimeUnit.SECONDS)
                 .join();
+    }
+
+    @Test
+    void messagingRuntimesRouteStandardMessagesWithoutCrossTalk() throws Exception {
+        MessagingRuntime proxy = newRuntime(
+                "proxy-eu-1", NetworkInstanceType.PROXY, Optional.of("eu"));
+        MessagingRuntime server = newRuntime(
+                "server-eu-1", NetworkInstanceType.SERVER, Optional.of("eu"));
+        List<String> proxyDeliveries = new CopyOnWriteArrayList<>();
+        List<String> serverDeliveries = new CopyOnWriteArrayList<>();
+        CountDownLatch proxyBarrier = new CountDownLatch(1);
+        CountDownLatch serverBarrier = new CountDownLatch(1);
+        CountDownLatch locationRequest = new CountDownLatch(1);
+        proxy.subscribe(GlobalBroadcastMessage.class, message -> {
+            proxyDeliveries.add(message.content());
+            if (message.content().equals("barrier")) {
+                proxyBarrier.countDown();
+            }
+        });
+        server.subscribe(GlobalBroadcastMessage.class, message -> {
+            serverDeliveries.add(message.content());
+            if (message.content().equals("barrier")) {
+                serverBarrier.countDown();
+            }
+        });
+        server.subscribe(PlayerLocationRequest.class, ignored -> locationRequest.countDown());
+        CompletableFuture.allOf(proxy.start(), server.start())
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+
+        proxy.publish(NetworkTargets.allInstances(), new GlobalBroadcastMessage("all"))
+                .join();
+        proxy.publish(NetworkTargets.allProxies(), new GlobalBroadcastMessage("proxies"))
+                .join();
+        proxy.publish(NetworkTargets.allServers(), new GlobalBroadcastMessage("servers"))
+                .join();
+        proxy.publish(
+                        NetworkTargets.instance("server-eu-1"),
+                        new GlobalBroadcastMessage("instance"))
+                .join();
+        proxy.publish(NetworkTargets.group("eu"), new GlobalBroadcastMessage("group"))
+                .join();
+        proxy.publish(
+                        NetworkTargets.instance("missing"),
+                        new GlobalBroadcastMessage("wrong-instance"))
+                .join();
+        proxy.publish(NetworkTargets.group("us"), new GlobalBroadcastMessage("wrong-group"))
+                .join();
+        proxy.publish(
+                        NetworkTargets.instance("server-eu-1"),
+                        new PlayerLocationRequest(java.util.UUID.randomUUID()))
+                .join();
+        proxy.publish(NetworkTargets.allInstances(), new GlobalBroadcastMessage("barrier"))
+                .join();
+
+        assertTrue(proxyBarrier.await(10, TimeUnit.SECONDS));
+        assertTrue(serverBarrier.await(10, TimeUnit.SECONDS));
+        assertTrue(locationRequest.await(10, TimeUnit.SECONDS));
+        assertEquals(List.of("all", "proxies", "group", "barrier"), proxyDeliveries);
+        assertEquals(
+                List.of("all", "servers", "instance", "group", "barrier"),
+                serverDeliveries);
+    }
+
+    @Test
+    void slowRuntimeListenerDoesNotBlockPublisherOrAnotherRuntime() throws Exception {
+        MessagingRuntime sender = newRuntime(
+                "proxy-eu-1", NetworkInstanceType.PROXY, Optional.of("eu"));
+        MessagingRuntime receiver = newRuntime(
+                "server-eu-1", NetworkInstanceType.SERVER, Optional.of("eu"));
+        CountDownLatch slowStarted = new CountDownLatch(1);
+        CountDownLatch releaseSlow = new CountDownLatch(1);
+        CountDownLatch senderReceived = new CountDownLatch(1);
+        receiver.subscribe(GlobalBroadcastMessage.class, ignored -> {
+            slowStarted.countDown();
+            try {
+                releaseSlow.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        sender.subscribe(
+                GlobalBroadcastMessage.class,
+                ignored -> senderReceived.countDown());
+        CompletableFuture.allOf(sender.start(), receiver.start()).join();
+
+        try {
+            sender.publish(
+                            NetworkTargets.allInstances(),
+                            new GlobalBroadcastMessage("non-blocking"))
+                    .orTimeout(2, TimeUnit.SECONDS)
+                    .join();
+
+            assertTrue(slowStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(senderReceived.await(5, TimeUnit.SECONDS));
+            sender.publish(
+                            NetworkTargets.instance("proxy-eu-1"),
+                            new GlobalBroadcastMessage("still-responsive"))
+                    .orTimeout(2, TimeUnit.SECONDS)
+                    .join();
+        } finally {
+            releaseSlow.countDown();
+        }
+    }
+
+    @Test
+    void messagingRuntimeContinuesAfterRedisReconnect() throws Exception {
+        MessagingRuntime sender = newRuntime(
+                "proxy-eu-1", NetworkInstanceType.PROXY, Optional.of("eu"));
+        MessagingRuntime receiver = newRuntime(
+                "server-eu-1", NetworkInstanceType.SERVER, Optional.of("eu"));
+        CountDownLatch beforeInterruption = new CountDownLatch(1);
+        CountDownLatch afterInterruption = new CountDownLatch(1);
+        receiver.subscribe(GlobalBroadcastMessage.class, message -> {
+            if (message.content().equals("before")) {
+                beforeInterruption.countDown();
+            } else if (message.content().equals("after")) {
+                afterInterruption.countDown();
+            }
+        });
+        CompletableFuture.allOf(sender.start(), receiver.start()).join();
+        sender.publish(
+                        NetworkTargets.instance("server-eu-1"),
+                        new GlobalBroadcastMessage("before"))
+                .join();
+        assertTrue(beforeInterruption.await(5, TimeUnit.SECONDS));
+
+        redisProxy.disable();
+        try {
+            await(
+                    () -> transports.stream()
+                            .anyMatch(transport -> transport.state() == TransportState.CONNECTING),
+                    Duration.ofSeconds(10));
+        } finally {
+            redisProxy.enable();
+        }
+        await(
+                () -> transports.stream()
+                        .allMatch(transport -> transport.state() == TransportState.CONNECTED),
+                Duration.ofSeconds(20));
+        retryUntil(
+                        () -> sender.publish(
+                                        NetworkTargets.instance("server-eu-1"),
+                                        new GlobalBroadcastMessage("after"))
+                                .thenApply(ignored -> true),
+                        Duration.ofSeconds(10),
+                        "runtime publish did not recover")
+                .join();
+
+        assertTrue(afterInterruption.await(10, TimeUnit.SECONDS));
     }
 
     @Test
@@ -210,11 +390,17 @@ class RedisTransportIntegrationTest {
         assertTrue(beforeRestart.await(5, TimeUnit.SECONDS));
 
         redisProxy.disable();
-        await(
-                () -> sender.state() == TransportState.CONNECTING
-                        || receiver.state() == TransportState.CONNECTING,
-                Duration.ofSeconds(10));
-        redisProxy.enable();
+        CompletableFuture<Void> reconnectReady;
+        try {
+            await(
+                    () -> receiver.state() == TransportState.CONNECTING,
+                    Duration.ofSeconds(10));
+            reconnectReady = receiver.connect();
+            assertFalse(reconnectReady.isDone());
+        } finally {
+            redisProxy.enable();
+        }
+        reconnectReady.orTimeout(20, TimeUnit.SECONDS).join();
         await(
                 () -> sender.state() == TransportState.CONNECTED
                         && receiver.state() == TransportState.CONNECTED,
@@ -260,6 +446,17 @@ class RedisTransportIntegrationTest {
         LettuceRedisTransport transport = new LettuceRedisTransport(config);
         transports.add(transport);
         return transport;
+    }
+
+    private MessagingRuntime newRuntime(
+            String instanceId, NetworkInstanceType type, Optional<String> group) {
+        LettuceRedisTransport transport = newTransport();
+        MessagingRuntime runtime = MessagingRuntimes.create(
+                transport,
+                new LocalInstanceIdentity(instanceId, type, group),
+                MessagingRuntimeConfig.defaults());
+        runtimes.add(runtime);
+        return runtime;
     }
 
     private static void publishEventually(

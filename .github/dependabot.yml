@@ -17,8 +17,12 @@ updates:
     commit-message:
       prefix: "deps"
 
-    reviewers:
-      - "NicDevTV"
+    ignore:
+      # Paper 26.1+ requires Java 25; this project currently targets Java 21.
+      - dependency-name: "io.papermc.paper:paper-api"
+        versions: ["26.*"]
+      - dependency-name: "com.velocitypowered:velocity-api"
+        versions: ["4.*"]
 
     groups:
       gradle-dependencies:

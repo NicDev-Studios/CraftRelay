@@ -16,31 +16,13 @@
 package tv.nicdev.craftrelay.common.internal.state;
 
 import java.util.Collection;
-import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
-import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 
-/**
- * Internal asynchronous source of network-state snapshots.
- *
- * <p>Step 7 supplies the distributed presence implementation.
- */
-public interface NetworkStateProvider {
+/** Internal asynchronous source for active network-instance snapshots. */
+@FunctionalInterface
+public interface InstanceStateProvider {
 
-    /**
-     * Returns known instances.
-     *
-     * @return asynchronous point-in-time collection
-     */
+    /** Returns the currently active instances as an immutable snapshot. */
     CompletableFuture<? extends Collection<NetworkInstance>> instances();
-
-    /**
-     * Looks up a player.
-     *
-     * @param playerId player unique ID
-     * @return asynchronous optional player snapshot
-     */
-    CompletableFuture<Optional<NetworkPlayer>> player(UUID playerId);
 }

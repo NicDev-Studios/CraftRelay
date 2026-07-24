@@ -83,7 +83,13 @@ public interface CraftRelayApi {
     /**
      * Returns the currently known network instances.
      *
+     * <p>The snapshot is read from CraftRelay's authoritative Redis presence registry. A crashed
+     * instance remains visible only until its configured lease TTL expires. The returned
+     * collection is immutable. If the state store is unavailable, the future fails with
+     * {@link ApiUnavailableException}.
+     *
      * @return a future containing an immutable point-in-time snapshot
+     * @throws ApiUnavailableException asynchronously when the presence store is unavailable
      */
     CompletableFuture<Collection<NetworkInstance>> instances();
 

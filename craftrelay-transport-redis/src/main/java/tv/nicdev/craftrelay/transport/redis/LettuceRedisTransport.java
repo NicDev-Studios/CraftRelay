@@ -15,11 +15,8 @@
  */
 package tv.nicdev.craftrelay.transport.redis;
 
-import io.lettuce.core.ClientOptions;
 import io.lettuce.core.RedisChannelHandler;
-import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisConnectionStateListener;
-import io.lettuce.core.RedisURI;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.codec.ByteArrayCodec;
 import io.lettuce.core.pubsub.RedisPubSubAdapter;
@@ -46,8 +43,9 @@ import tv.nicdev.craftrelay.common.transport.TransportState;
 /**
  * Thread-safe Redis Pub/Sub implementation backed by Lettuce.
  *
- * <p>This transport owns its Redis client and both connections. It uses one regular connection for
- * publishing and a separate Pub/Sub connection for receiving.
+ * <p>It uses one regular connection for publishing and a separate Pub/Sub connection for
+ * receiving. A directly constructed transport owns its Redis backend; a transport created by
+ * {@link LettuceRedisBackend} shares that backend with the instance store.
  */
 public final class LettuceRedisTransport implements NetworkTransport {
 
@@ -55,8 +53,8 @@ public final class LettuceRedisTransport implements NetworkTransport {
             System.getLogger(LettuceRedisTransport.class.getName());
 
     private final Object lifecycleLock = new Object();
-    private final RedisClient client;
-    private final RedisURI redisUri;
+    private final LettuceRedisBackend backend;
+    private final boolean closesBackend;
     private final ListenerDispatcher listenerDispatcher;
     private final Map<String, List<ListenerRegistration>> listeners = new HashMap<>();
     private final Set<String> brokerSubscriptions = new HashSet<>();
@@ -76,14 +74,14 @@ public final class LettuceRedisTransport implements NetworkTransport {
      * @param config validated Redis settings
      */
     public LettuceRedisTransport(RedisTransportConfig config) {
-        Objects.requireNonNull(config, "config");
+        this(new LettuceRedisBackend(Objects.requireNonNull(config, "config")), true);
+    }
+
+    LettuceRedisTransport(LettuceRedisBackend backend, boolean closesBackend) {
+        this.backend = Objects.requireNonNull(backend, "backend");
+        this.closesBackend = closesBackend;
         this.listenerDispatcher =
                 new ListenerDispatcher("craftrelay-redis-listener-");
-        this.redisUri = createRedisUri(config);
-        this.client = RedisClient.create();
-        this.client.setOptions(ClientOptions.builder()
-                .autoReconnect(true)
-                .build());
     }
 
     @Override
@@ -206,14 +204,17 @@ public final class LettuceRedisTransport implements NetworkTransport {
     private CompletableFuture<Void> connectConnections() {
         CompletableFuture<StatefulRedisConnection<byte[], byte[]>> publisher;
         try {
-            publisher = client.connectAsync(ByteArrayCodec.INSTANCE, redisUri).toCompletableFuture();
+            publisher = backend.client()
+                    .connectAsync(ByteArrayCodec.INSTANCE, backend.redisUri())
+                    .toCompletableFuture();
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
         CompletableFuture<StatefulRedisPubSubConnection<byte[], byte[]>> subscriber;
         try {
             subscriber =
-                    client.connectPubSubAsync(ByteArrayCodec.INSTANCE, redisUri)
+                    backend.client()
+                            .connectPubSubAsync(ByteArrayCodec.INSTANCE, backend.redisUri())
                             .toCompletableFuture();
         } catch (RuntimeException failure) {
             publisher.thenAccept(StatefulRedisConnection::closeAsync);
@@ -362,32 +363,19 @@ public final class LettuceRedisTransport implements NetworkTransport {
     private CompletableFuture<Void> shutdownResources() {
         return closeConnections()
                 .handle((ignored, connectionFailure) -> connectionFailure)
-                .thenCompose(connectionFailure ->
-                        client.shutdownAsync()
-                                .handle((ignored, clientFailure) -> {
-                                    Throwable failure =
-                                            AsyncFailures.merge(
-                                                    connectionFailure, clientFailure);
-                                    if (failure != null) {
-                                        throw new CompletionException(failure);
-                                    }
-                                    return null;
-                                }));
-    }
-
-    private static RedisURI createRedisUri(RedisTransportConfig config) {
-        RedisURI.Builder builder = RedisURI.Builder.redis(config.host(), config.port())
-                .withDatabase(config.database())
-                .withSsl(config.ssl())
-                .withTimeout(config.connectionTimeout());
-        if (config.username().isPresent()) {
-            builder.withAuthentication(
-                    config.username().orElseThrow(),
-                    config.password().orElseThrow().toCharArray());
-        } else {
-            config.password().ifPresent(password -> builder.withPassword(password.toCharArray()));
-        }
-        return builder.build();
+                .thenCompose(connectionFailure -> {
+                    CompletableFuture<Void> backendClose = closesBackend
+                            ? backend.close()
+                            : CompletableFuture.completedFuture(null);
+                    return backendClose.handle((ignored, backendFailure) -> {
+                        Throwable failure =
+                                AsyncFailures.merge(connectionFailure, backendFailure);
+                        if (failure != null) {
+                            throw new CompletionException(failure);
+                        }
+                        return null;
+                    });
+                });
     }
 
     private static String requireChannel(String channel) {

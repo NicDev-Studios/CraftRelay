@@ -38,26 +38,32 @@ import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatche
 import tv.nicdev.craftrelay.common.internal.request.PendingRequestManager;
 import tv.nicdev.craftrelay.common.internal.request.RequestValidation;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
-import tv.nicdev.craftrelay.common.internal.state.NetworkStateProvider;
+import tv.nicdev.craftrelay.common.internal.state.InstanceStateProvider;
+import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
 
 final class DefaultCraftRelayApi implements CraftRelayApi {
 
     private final DefaultCraftRelayNode node;
     private final MessagingRuntime runtime;
     private final PendingRequestManager requestManager;
-    private final NetworkStateProvider stateProvider;
+    private final InstanceStateProvider instanceStateProvider;
+    private final PlayerStateProvider playerStateProvider;
     private final FutureCompletionDispatcher completionDispatcher;
 
     DefaultCraftRelayApi(
             DefaultCraftRelayNode node,
             MessagingRuntime runtime,
             PendingRequestManager requestManager,
-            NetworkStateProvider stateProvider,
+            InstanceStateProvider instanceStateProvider,
+            PlayerStateProvider playerStateProvider,
             FutureCompletionDispatcher completionDispatcher) {
         this.node = node;
         this.runtime = runtime;
         this.requestManager = requestManager;
-        this.stateProvider = stateProvider;
+        this.instanceStateProvider =
+                Objects.requireNonNull(instanceStateProvider, "instanceStateProvider");
+        this.playerStateProvider =
+                Objects.requireNonNull(playerStateProvider, "playerStateProvider");
         this.completionDispatcher = completionDispatcher;
     }
 
@@ -122,8 +128,8 @@ final class DefaultCraftRelayApi implements CraftRelayApi {
         try {
             instances =
                     Objects.requireNonNull(
-                            stateProvider.instances(),
-                            "stateProvider.instances()");
+                            instanceStateProvider.instances(),
+                            "instanceStateProvider.instances()");
         } catch (RuntimeException failure) {
             return failedOperation(failure);
         }
@@ -146,8 +152,8 @@ final class DefaultCraftRelayApi implements CraftRelayApi {
         try {
             player =
                     Objects.requireNonNull(
-                            stateProvider.player(playerId),
-                            "stateProvider.player()");
+                            playerStateProvider.player(playerId),
+                            "playerStateProvider.player()");
         } catch (RuntimeException failure) {
             return failedOperation(failure);
         }

@@ -13,8 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-/**
- * Internal instance-store and player-state boundaries.
- */
 package tv.nicdev.craftrelay.common.internal.state;
+
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import tv.nicdev.craftrelay.api.model.NetworkPlayer;
+
+/** Internal asynchronous source for network-player snapshots. */
+@FunctionalInterface
+public interface PlayerStateProvider {
+
+    /** Finds a player by unique ID. */
+    CompletableFuture<Optional<NetworkPlayer>> player(UUID playerId);
+}

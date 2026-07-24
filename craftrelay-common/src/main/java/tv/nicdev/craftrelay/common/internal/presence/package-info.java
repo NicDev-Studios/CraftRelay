@@ -14,7 +14,5 @@
  * limitations under the License.
  */
 
-/**
- * Internal instance-store and player-state boundaries.
- */
-package tv.nicdev.craftrelay.common.internal.state;
+/** Internal lifecycle and configuration for distributed instance presence. */
+package tv.nicdev.craftrelay.common.internal.presence;

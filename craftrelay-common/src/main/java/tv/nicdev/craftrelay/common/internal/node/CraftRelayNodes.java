@@ -16,12 +16,15 @@
 package tv.nicdev.craftrelay.common.internal.node;
 
 import java.util.Objects;
+import java.util.function.IntSupplier;
+import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimes;
-import tv.nicdev.craftrelay.common.internal.state.NetworkStateProvider;
+import tv.nicdev.craftrelay.common.internal.state.NetworkInstanceStore;
+import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
 import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 
 /**
@@ -38,20 +41,27 @@ public final class CraftRelayNodes {
      * @param transport message transport
      * @param identity local node identity
      * @param runtimeConfig messaging settings
-     * @param stateProvider network-state provider
+     * @param instanceStore authoritative instance store
+     * @param playerStateProvider player-state provider
+     * @param onlinePlayerCount constant-time local player count
      * @return new node
      */
     public static CraftRelayNode create(
             NetworkTransport transport,
             LocalInstanceIdentity identity,
             MessagingRuntimeConfig runtimeConfig,
-            NetworkStateProvider stateProvider) {
+            NetworkInstanceStore instanceStore,
+            PlayerStateProvider playerStateProvider,
+            IntSupplier onlinePlayerCount) {
         return create(
                 transport,
                 identity,
                 runtimeConfig,
                 RequestRuntimeConfig.defaults(),
-                stateProvider);
+                InstancePresenceConfig.defaults(),
+                instanceStore,
+                playerStateProvider,
+                onlinePlayerCount);
     }
 
     /**
@@ -61,7 +71,10 @@ public final class CraftRelayNodes {
      * @param identity local node identity
      * @param runtimeConfig messaging settings
      * @param requestConfig request settings
-     * @param stateProvider network-state provider
+     * @param presenceConfig instance-presence settings
+     * @param instanceStore authoritative instance store
+     * @param playerStateProvider player-state provider
+     * @param onlinePlayerCount constant-time local player count
      * @return new node
      */
     public static CraftRelayNode create(
@@ -69,15 +82,23 @@ public final class CraftRelayNodes {
             LocalInstanceIdentity identity,
             MessagingRuntimeConfig runtimeConfig,
             RequestRuntimeConfig requestConfig,
-            NetworkStateProvider stateProvider) {
+            InstancePresenceConfig presenceConfig,
+            NetworkInstanceStore instanceStore,
+            PlayerStateProvider playerStateProvider,
+            IntSupplier onlinePlayerCount) {
+        LocalInstanceIdentity validatedIdentity = Objects.requireNonNull(identity, "identity");
         MessagingRuntime runtime =
                 MessagingRuntimes.create(
                         Objects.requireNonNull(transport, "transport"),
-                        Objects.requireNonNull(identity, "identity"),
+                        validatedIdentity,
                         Objects.requireNonNull(runtimeConfig, "runtimeConfig"));
         return new DefaultCraftRelayNode(
                 runtime,
+                validatedIdentity,
                 Objects.requireNonNull(requestConfig, "requestConfig"),
-                Objects.requireNonNull(stateProvider, "stateProvider"));
+                Objects.requireNonNull(presenceConfig, "presenceConfig"),
+                Objects.requireNonNull(instanceStore, "instanceStore"),
+                Objects.requireNonNull(playerStateProvider, "playerStateProvider"),
+                Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"));
     }
 }

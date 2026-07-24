@@ -44,8 +44,9 @@ import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
-import tv.nicdev.craftrelay.common.internal.state.NetworkStateProvider;
+import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.testing.TestNetworkTransport;
+import tv.nicdev.craftrelay.common.testing.TestNetworkInstanceStore;
 
 class CraftRelayNodeTest {
 
@@ -58,10 +59,12 @@ class CraftRelayNodeTest {
         NetworkPlayer player = player(playerId);
         List<NetworkInstance> mutableInstances =
                 new ArrayList<>(List.of(instance("proxy-1")));
-        TestStateProvider stateProvider =
-                new TestStateProvider(mutableInstances, Optional.of(player));
+        TestNetworkInstanceStore instanceStore = new TestNetworkInstanceStore();
+        mutableInstances.forEach(value -> instanceStore.seed(value, "seed"));
+        TestPlayerStateProvider playerStateProvider =
+                new TestPlayerStateProvider(Optional.of(player));
         CraftRelayNode node =
-                node(new TestNetworkTransport(), stateProvider);
+                node(new TestNetworkTransport(), instanceStore, playerStateProvider);
         CraftRelayApi api = node.api();
 
         assertEquals(CraftRelayState.INITIALIZING, api.state());
@@ -86,7 +89,7 @@ class CraftRelayNodeTest {
         Collection<NetworkInstance> snapshot =
                 api.instances().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
         mutableInstances.clear();
-        assertEquals(1, snapshot.size());
+        assertEquals(2, snapshot.size());
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> snapshot.clear());
@@ -124,7 +127,10 @@ class CraftRelayNodeTest {
             throws Exception {
         TestNetworkTransport transport = new TestNetworkTransport();
         transport.failNextConnects(1);
-        CraftRelayNode node = node(transport, TestStateProvider.empty());
+        CraftRelayNode node = node(
+                transport,
+                new TestNetworkInstanceStore(),
+                TestPlayerStateProvider.empty());
         CraftRelayApi api = node.api();
 
         assertThrows(
@@ -145,8 +151,37 @@ class CraftRelayNodeTest {
         assertEquals(2, transport.connectCalls());
     }
 
+    @Test
+    void lostInstanceLeaseTriggersControlledNodeShutdown() {
+        TestNetworkInstanceStore store = new TestNetworkInstanceStore();
+        CraftRelayNode node = CraftRelayNodes.create(
+                new TestNetworkTransport(),
+                new LocalInstanceIdentity(
+                        "node-a",
+                        NetworkInstanceType.PROXY,
+                        Optional.of("eu")),
+                MessagingRuntimeConfig.defaults(),
+                tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig.defaults(),
+                new InstancePresenceConfig(
+                        "test", Duration.ofMillis(20), Duration.ofMillis(100), 8),
+                store,
+                TestPlayerStateProvider.empty(),
+                () -> 0);
+        node.start().join();
+
+        store.forceRemove("node-a");
+        awaitState(node.api(), CraftRelayState.STOPPED, System.nanoTime() + TIMEOUT.toNanos())
+                .join();
+
+        assertEquals(CraftRelayState.STOPPED, node.api().state());
+        assertFutureFailureUnchecked(
+                ApiUnavailableException.class, node.api().instances());
+    }
+
     private static CraftRelayNode node(
-            TestNetworkTransport transport, NetworkStateProvider stateProvider) {
+            TestNetworkTransport transport,
+            TestNetworkInstanceStore instanceStore,
+            TestPlayerStateProvider playerStateProvider) {
         return CraftRelayNodes.create(
                 transport,
                 new LocalInstanceIdentity(
@@ -154,7 +189,9 @@ class CraftRelayNodeTest {
                         NetworkInstanceType.PROXY,
                         Optional.of("eu")),
                 MessagingRuntimeConfig.defaults(),
-                stateProvider);
+                instanceStore,
+                playerStateProvider,
+                () -> 0);
     }
 
     private static NetworkInstance instance(String id) {
@@ -194,27 +231,39 @@ class CraftRelayNodeTest {
         assertInstanceOf(expected, failure.getCause());
     }
 
-    private record TestStateProvider(
-            List<NetworkInstance> instanceValues,
-            Optional<NetworkPlayer> playerValue)
-            implements NetworkStateProvider {
+    private static void assertFutureFailureUnchecked(
+            Class<? extends Throwable> expected, CompletableFuture<?> future) {
+        java.util.concurrent.CompletionException failure =
+                assertThrows(java.util.concurrent.CompletionException.class, future::join);
+        assertInstanceOf(expected, failure.getCause());
+    }
 
-        private TestStateProvider {
-            instanceValues =
-                    java.util.Objects.requireNonNull(
-                            instanceValues, "instanceValues");
+    private static CompletableFuture<Void> awaitState(
+            CraftRelayApi api, CraftRelayState expected, long deadline) {
+        if (api.state() == expected) {
+            return CompletableFuture.completedFuture(null);
+        }
+        if (System.nanoTime() >= deadline) {
+            return CompletableFuture.failedFuture(
+                    new AssertionError("API did not reach state " + expected));
+        }
+        return CompletableFuture.runAsync(
+                        () -> {},
+                        CompletableFuture.delayedExecutor(10, TimeUnit.MILLISECONDS))
+                .thenCompose(ignored -> awaitState(api, expected, deadline));
+    }
+
+    private record TestPlayerStateProvider(Optional<NetworkPlayer> playerValue)
+            implements tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider {
+
+        private TestPlayerStateProvider {
             playerValue =
                     java.util.Objects.requireNonNull(
                             playerValue, "playerValue");
         }
 
-        private static TestStateProvider empty() {
-            return new TestStateProvider(new ArrayList<>(), Optional.empty());
-        }
-
-        @Override
-        public CompletableFuture<? extends Collection<NetworkInstance>> instances() {
-            return CompletableFuture.completedFuture(instanceValues);
+        private static TestPlayerStateProvider empty() {
+            return new TestPlayerStateProvider(Optional.empty());
         }
 
         @Override

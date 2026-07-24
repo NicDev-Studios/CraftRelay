@@ -18,6 +18,8 @@ package tv.nicdev.craftrelay.common.internal.node;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import tv.nicdev.craftrelay.api.CraftRelayApi;
 import tv.nicdev.craftrelay.api.CraftRelayState;
 import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
@@ -26,22 +28,30 @@ import tv.nicdev.craftrelay.api.message.PlayerLocationResponse;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatcher;
+import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.InstanceRegistry;
 import tv.nicdev.craftrelay.common.internal.request.PendingRequestManager;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistries;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistry;
 import tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig;
+import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
-import tv.nicdev.craftrelay.common.internal.state.NetworkStateProvider;
+import tv.nicdev.craftrelay.common.internal.state.NetworkInstanceStore;
+import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
 
 final class DefaultCraftRelayNode implements CraftRelayNode {
 
+    private static final System.Logger LOGGER =
+            System.getLogger(DefaultCraftRelayNode.class.getName());
+
     private final Object lifecycleLock = new Object();
     private final MessagingRuntime runtime;
-    private final NetworkStateProvider stateProvider;
+    private final PlayerStateProvider playerStateProvider;
     private final FutureCompletionDispatcher completionDispatcher =
             new FutureCompletionDispatcher("craftrelay-api-completion-");
     private final PendingRequestManager requestManager;
     private final RequestHandlerRegistry requestHandlers;
+    private final InstanceRegistry instanceRegistry;
     private final CraftRelayApi api;
 
     private volatile NodeState state = NodeState.NEW;
@@ -50,10 +60,15 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
 
     DefaultCraftRelayNode(
             MessagingRuntime runtime,
+            LocalInstanceIdentity identity,
             RequestRuntimeConfig requestConfig,
-            NetworkStateProvider stateProvider) {
+            InstancePresenceConfig presenceConfig,
+            NetworkInstanceStore instanceStore,
+            PlayerStateProvider playerStateProvider,
+            IntSupplier onlinePlayerCount) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
-        this.stateProvider = Objects.requireNonNull(stateProvider, "stateProvider");
+        this.playerStateProvider =
+                Objects.requireNonNull(playerStateProvider, "playerStateProvider");
         requestManager =
                 new PendingRequestManager(runtime, requestConfig, completionDispatcher);
         requestHandlers =
@@ -61,12 +76,21 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
         requestHandlers.register(
                 PlayerLocationRequest.class,
                 (request, context) -> locationResponse(request));
+        instanceRegistry =
+                new InstanceRegistry(
+                        instanceStore,
+                        runtime,
+                        identity,
+                        presenceConfig,
+                        onlinePlayerCount,
+                        this::handleLeaseLoss);
         api =
                 new DefaultCraftRelayApi(
                         this,
                         runtime,
                         requestManager,
-                        stateProvider,
+                        instanceRegistry,
+                        playerStateProvider,
                         completionDispatcher);
     }
 
@@ -87,15 +111,20 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             startFuture = operation;
         }
 
-        CompletableFuture<Void> runtimeStart;
+        CompletableFuture<Void> start;
         try {
-            runtimeStart = Objects.requireNonNull(runtime.start(), "runtime.start()");
+            start = startStage(instanceRegistry::connect, "instanceRegistry.connect()")
+                    .thenComposeAsync(
+                            ignored -> startStage(runtime::start, "runtime.start()"),
+                            completionDispatcher::execute)
+                    .thenComposeAsync(
+                            ignored -> startStage(instanceRegistry::start, "instanceRegistry.start()"),
+                            completionDispatcher::execute);
         } catch (RuntimeException failure) {
             completeStart(operation, failure);
             return operation;
         }
-        runtimeStart.whenComplete(
-                (ignored, failure) -> completeStart(operation, failure));
+        start.whenComplete((ignored, failure) -> completeStart(operation, failure));
         return operation;
     }
 
@@ -121,33 +150,19 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             closeFuture = operation;
         }
 
-        Throwable cleanupFailure = null;
-        try {
-            requestHandlers.close();
-        } catch (Throwable failure) {
-            cleanupFailure = AsyncFailures.merge(cleanupFailure, failure);
-        }
-        try {
-            requestManager.close();
-        } catch (Throwable failure) {
-            cleanupFailure = AsyncFailures.merge(cleanupFailure, failure);
-        }
-
-        CompletableFuture<Void> runtimeClose;
-        try {
-            runtimeClose = Objects.requireNonNull(runtime.close(), "runtime.close()");
-        } catch (Throwable failure) {
-            finishClose(
-                    operation,
-                    AsyncFailures.merge(cleanupFailure, failure));
-            return operation;
-        }
-        Throwable priorFailure = cleanupFailure;
-        runtimeClose.whenComplete(
-                (ignored, failure) ->
-                        finishClose(
-                                operation,
-                                AsyncFailures.merge(priorFailure, failure)));
+        Throwable immediateFailure = closeRequestSystem();
+        closeStage(
+                        immediateFailure,
+                        instanceRegistry::stop,
+                        "instanceRegistry.stop()")
+                .thenCompose(failure -> closeStage(
+                        failure, runtime::close, "runtime.close()"))
+                .thenCompose(failure -> closeStage(
+                        failure, instanceRegistry::close, "instanceRegistry.close()"))
+                .whenComplete((failure, chainFailure) -> finishClose(
+                        operation,
+                        AsyncFailures.merge(
+                                failure, AsyncFailures.unwrapNullable(chainFailure))));
         return operation;
     }
 
@@ -168,8 +183,8 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             PlayerLocationRequest request) {
         CompletableFuture<Optional<NetworkPlayer>> playerFuture =
                 Objects.requireNonNull(
-                        stateProvider.player(request.playerId()),
-                        "stateProvider.player()");
+                        playerStateProvider.player(request.playerId()),
+                        "playerStateProvider.player()");
         return completionDispatcher.relay(
                 playerFuture,
                 player ->
@@ -207,8 +222,38 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
         }
     }
 
+    private Throwable closeRequestSystem() {
+        Throwable failure = null;
+        try {
+            requestHandlers.close();
+        } catch (Throwable closeFailure) {
+            failure = AsyncFailures.merge(failure, closeFailure);
+        }
+        try {
+            requestManager.close();
+        } catch (Throwable closeFailure) {
+            failure = AsyncFailures.merge(failure, closeFailure);
+        }
+        return failure;
+    }
+
+    private static CompletableFuture<Throwable> closeStage(
+            Throwable priorFailure,
+            Supplier<CompletableFuture<Void>> closeAction,
+            String description) {
+        CompletableFuture<Void> close;
+        try {
+            close = requireFuture(closeAction.get(), description);
+        } catch (Throwable failure) {
+            return CompletableFuture.completedFuture(
+                    AsyncFailures.merge(priorFailure, failure));
+        }
+        return close.handle((ignored, failure) ->
+                AsyncFailures.merge(priorFailure, AsyncFailures.unwrapNullable(failure)));
+    }
+
     private void finishClose(
-            CompletableFuture<Void> operation, Throwable runtimeFailure) {
+            CompletableFuture<Void> operation, Throwable lifecycleFailure) {
         ApiUnavailableException unavailable =
                 new ApiUnavailableException("CraftRelay node has stopped");
         completionDispatcher.close(unavailable)
@@ -216,7 +261,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                         (ignored, dispatcherFailure) -> {
                             Throwable failure =
                                     AsyncFailures.merge(
-                                            AsyncFailures.unwrapNullable(runtimeFailure),
+                                            AsyncFailures.unwrapNullable(lifecycleFailure),
                                             AsyncFailures.unwrapNullable(dispatcherFailure));
                             synchronized (lifecycleLock) {
                                 state = NodeState.STOPPED;
@@ -227,6 +272,30 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                                 operation.completeExceptionally(failure);
                             }
                         });
+    }
+
+    private void handleLeaseLoss(Throwable failure) {
+        LOGGER.log(
+                System.Logger.Level.ERROR,
+                "CraftRelay instance lease was lost; stopping node",
+                failure);
+        close();
+    }
+
+    private static <T> CompletableFuture<T> requireFuture(
+            CompletableFuture<T> future, String description) {
+        return Objects.requireNonNull(future, description);
+    }
+
+    private CompletableFuture<Void> startStage(
+            Supplier<CompletableFuture<Void>> action, String description) {
+        synchronized (lifecycleLock) {
+            if (state != NodeState.STARTING) {
+                return CompletableFuture.failedFuture(
+                        new ApiUnavailableException("CraftRelay node stopped during start"));
+            }
+        }
+        return requireFuture(action.get(), description);
     }
 
     private enum NodeState {

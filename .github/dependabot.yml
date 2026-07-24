@@ -20,6 +20,10 @@ updates:
     reviewers:
       - "NicDevTV"
 
+    ignore:
+      - dependency-name: "io.papermc.paper:paper-api"
+        versions: [ "26.x" ]
+
     groups:
       gradle-dependencies:
         patterns:

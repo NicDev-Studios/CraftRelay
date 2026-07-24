@@ -18,11 +18,10 @@ updates:
       prefix: "deps"
 
     ignore:
-      # Paper 26.1+ requires Java 25; this project currently targets Java 21.
+      # Paper updates are disabled because newer Paper lines require Java 25.
       - dependency-name: "io.papermc.paper:paper-api"
-        versions: ["26.*"]
+      # Velocity updates are disabled because the newer 4.x line is not supported here.
       - dependency-name: "com.velocitypowered:velocity-api"
-        versions: ["4.*"]
 
     groups:
       gradle-dependencies:

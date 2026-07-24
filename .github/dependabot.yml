@@ -23,6 +23,8 @@ updates:
     ignore:
       - dependency-name: "io.papermc.paper:paper-api"
         versions: [ "26.x" ]
+      - dependency-name: "com.velocitypowered:velocity-api"
+        versions: [ ",3.4.0-SNAPSHOT" ]
 
     groups:
       gradle-dependencies:

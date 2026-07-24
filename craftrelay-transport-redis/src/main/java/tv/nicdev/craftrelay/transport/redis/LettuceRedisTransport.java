@@ -37,6 +37,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.ListenerDispatcher;
 import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 import tv.nicdev.craftrelay.common.transport.TransportListener;
@@ -365,22 +366,13 @@ public final class LettuceRedisTransport implements NetworkTransport {
                         client.shutdownAsync()
                                 .handle((ignored, clientFailure) -> {
                                     Throwable failure =
-                                            mergeFailures(connectionFailure, clientFailure);
+                                            AsyncFailures.merge(
+                                                    connectionFailure, clientFailure);
                                     if (failure != null) {
                                         throw new CompletionException(failure);
                                     }
                                     return null;
                                 }));
-    }
-
-    private static Throwable mergeFailures(Throwable first, Throwable second) {
-        if (first == null) {
-            return second;
-        }
-        if (second != null && second != first) {
-            first.addSuppressed(second);
-        }
-        return first;
     }
 
     private static RedisURI createRedisUri(RedisTransportConfig config) {

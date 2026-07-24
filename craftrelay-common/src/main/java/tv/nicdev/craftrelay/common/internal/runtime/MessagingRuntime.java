@@ -15,11 +15,14 @@
  */
 package tv.nicdev.craftrelay.common.internal.runtime;
 
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
+import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 
 /**
  * Internal asynchronous messaging runtime used by CraftRelay implementation modules.
@@ -43,7 +46,22 @@ public interface MessagingRuntime {
      * @param message message payload
      * @return future completed after the transport accepts the message
      */
-    CompletableFuture<Void> publish(NetworkTarget target, NetworkMessage message);
+    default CompletableFuture<Void> publish(NetworkTarget target, NetworkMessage message) {
+        return publish(target, message, Optional.empty());
+    }
+
+    /**
+     * Publishes one message with optional request-correlation metadata.
+     *
+     * @param target routing target
+     * @param message message payload
+     * @param correlationId optional request correlation ID
+     * @return future completed after the transport accepts the message
+     */
+    CompletableFuture<Void> publish(
+            NetworkTarget target,
+            NetworkMessage message,
+            Optional<UUID> correlationId);
 
     /**
      * Registers a typed listener.
@@ -55,6 +73,14 @@ public interface MessagingRuntime {
      */
     <M extends NetworkMessage> Subscription subscribe(
             Class<M> messageType, Consumer<? super M> listener);
+
+    /**
+     * Registers an internal listener that receives decoded wire metadata.
+     *
+     * @param listener metadata-aware listener
+     * @return idempotent registration
+     */
+    Subscription subscribeDecoded(Consumer<? super DecodedMessage> listener);
 
     /**
      * Returns the current runtime state.

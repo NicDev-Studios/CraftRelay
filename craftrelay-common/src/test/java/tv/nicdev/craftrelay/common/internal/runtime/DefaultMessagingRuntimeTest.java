@@ -42,6 +42,7 @@ import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageCodec;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageCodecs;
+import tv.nicdev.craftrelay.common.testing.TestNetworkTransport;
 import tv.nicdev.craftrelay.common.transport.TransportState;
 
 class DefaultMessagingRuntimeTest {

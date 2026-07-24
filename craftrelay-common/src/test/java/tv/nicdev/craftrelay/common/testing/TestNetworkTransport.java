@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package tv.nicdev.craftrelay.common.internal.runtime;
+package tv.nicdev.craftrelay.common.testing;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -28,7 +28,7 @@ import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 import tv.nicdev.craftrelay.common.transport.TransportListener;
 import tv.nicdev.craftrelay.common.transport.TransportState;
 
-final class TestNetworkTransport implements NetworkTransport {
+public final class TestNetworkTransport implements NetworkTransport {
 
     private final Map<String, List<TransportListener>> listeners = new HashMap<>();
     private final List<byte[]> publishedPayloads = new ArrayList<>();
@@ -40,39 +40,39 @@ final class TestNetworkTransport implements NetworkTransport {
     private int remainingConnectFailures;
     private boolean failNextSubscriptionClose;
 
-    synchronized void holdNextConnect(CompletableFuture<Void> connection) {
+    public synchronized void holdNextConnect(CompletableFuture<Void> connection) {
         nextConnect = Objects.requireNonNull(connection, "connection");
     }
 
-    synchronized void failNextConnects(int count) {
+    public synchronized void failNextConnects(int count) {
         remainingConnectFailures = count;
     }
 
-    synchronized void holdNextClose(CompletableFuture<Void> close) {
+    public synchronized void holdNextClose(CompletableFuture<Void> close) {
         nextClose = Objects.requireNonNull(close, "close");
     }
 
-    synchronized void failNextSubscriptionClose() {
+    public synchronized void failNextSubscriptionClose() {
         failNextSubscriptionClose = true;
     }
 
-    int connectCalls() {
+    public int connectCalls() {
         return connectCalls.get();
     }
 
-    synchronized int listenerCount(String channel) {
+    public synchronized int listenerCount(String channel) {
         return listeners.getOrDefault(channel, List.of()).size();
     }
 
-    synchronized byte[] publishedPayload(int index) {
+    public synchronized byte[] publishedPayload(int index) {
         return Arrays.copyOf(publishedPayloads.get(index), publishedPayloads.get(index).length);
     }
 
-    synchronized int publishedPayloadCount() {
+    public synchronized int publishedPayloadCount() {
         return publishedPayloads.size();
     }
 
-    void emit(String channel, byte[] payload) {
+    public void emit(String channel, byte[] payload) {
         List<TransportListener> snapshot;
         synchronized (this) {
             snapshot = List.copyOf(listeners.getOrDefault(channel, List.of()));

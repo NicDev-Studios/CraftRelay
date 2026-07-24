@@ -17,6 +17,7 @@ package tv.nicdev.craftrelay.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,9 +25,13 @@ import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -43,14 +48,22 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.toxiproxy.ToxiproxyContainer;
 import org.testcontainers.utility.DockerImageName;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.api.exception.RequestTimeoutException;
 import tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage;
+import tv.nicdev.craftrelay.api.message.PlayerConnectRequest;
 import tv.nicdev.craftrelay.api.message.PlayerLocationRequest;
+import tv.nicdev.craftrelay.api.message.PlayerLocationResponse;
+import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
+import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
+import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
+import tv.nicdev.craftrelay.common.internal.node.CraftRelayNodes;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimes;
+import tv.nicdev.craftrelay.common.internal.state.NetworkStateProvider;
 import tv.nicdev.craftrelay.common.transport.TransportState;
 import tv.nicdev.craftrelay.transport.redis.LettuceRedisTransport;
 import tv.nicdev.craftrelay.transport.redis.RedisTransportConfig;
@@ -80,6 +93,7 @@ class RedisTransportIntegrationTest {
 
     private final List<LettuceRedisTransport> transports = new CopyOnWriteArrayList<>();
     private final List<MessagingRuntime> runtimes = new CopyOnWriteArrayList<>();
+    private final List<CraftRelayNode> nodes = new CopyOnWriteArrayList<>();
 
     @BeforeAll
     static void createRedisProxy() throws IOException {
@@ -91,6 +105,11 @@ class RedisTransportIntegrationTest {
 
     @AfterEach
     void closeTransports() {
+        CompletableFuture.allOf(nodes.stream()
+                        .map(CraftRelayNode::close)
+                        .toArray(CompletableFuture[]::new))
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
         CompletableFuture.allOf(runtimes.stream()
                         .map(MessagingRuntime::close)
                         .toArray(CompletableFuture[]::new))
@@ -101,6 +120,204 @@ class RedisTransportIntegrationTest {
                         .toArray(CompletableFuture[]::new))
                 .orTimeout(10, TimeUnit.SECONDS)
                 .join();
+    }
+
+    @Test
+    void craftRelayNodesExchangeCorrelatedRequestsAcrossRedis()
+            throws Exception {
+        UUID playerId = UUID.randomUUID();
+        NetworkPlayer player = player(playerId, "server-eu-1");
+        CraftRelayNode proxy =
+                newNode(
+                        "proxy-eu-1",
+                        NetworkInstanceType.PROXY,
+                        Optional.of("proxies"),
+                        Optional.empty());
+        CraftRelayNode firstServer =
+                newNode(
+                        "server-eu-1",
+                        NetworkInstanceType.SERVER,
+                        Optional.of("eu"),
+                        Optional.of(player));
+        CraftRelayNode secondServer =
+                newNode(
+                        "server-eu-2",
+                        NetworkInstanceType.SERVER,
+                        Optional.of("eu"),
+                        Optional.empty());
+        CompletableFuture.allOf(
+                        proxy.start(),
+                        firstServer.start(),
+                        secondServer.start())
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+
+        PlayerLocationResponse direct =
+                proxy.api()
+                        .request(
+                                NetworkTargets.instance("server-eu-1"),
+                                new PlayerLocationRequest(playerId),
+                                PlayerLocationResponse.class,
+                                Duration.ofSeconds(5))
+                        .orTimeout(10, TimeUnit.SECONDS)
+                        .join();
+        assertEquals(Optional.of(player), direct.player());
+
+        PlayerLocationResponse grouped =
+                proxy.api()
+                        .request(
+                                NetworkTargets.group("eu"),
+                                new PlayerLocationRequest(playerId),
+                                PlayerLocationResponse.class,
+                                Duration.ofSeconds(5))
+                        .orTimeout(10, TimeUnit.SECONDS)
+                        .join();
+        assertEquals(playerId, grouped.playerId());
+
+        PlayerLocationResponse broadcast =
+                proxy.api()
+                        .request(
+                                NetworkTargets.allServers(),
+                                new PlayerLocationRequest(playerId),
+                                PlayerLocationResponse.class,
+                                Duration.ofSeconds(5))
+                        .orTimeout(10, TimeUnit.SECONDS)
+                        .join();
+        assertEquals(playerId, broadcast.playerId());
+
+        List<CompletableFuture<PlayerLocationResponse>> parallel =
+                java.util.stream.IntStream.range(0, 32)
+                        .mapToObj(
+                                ignored ->
+                                        proxy.api()
+                                                .request(
+                                                        NetworkTargets.instance(
+                                                                "server-eu-1"),
+                                                        new PlayerLocationRequest(
+                                                                playerId),
+                                                        PlayerLocationResponse.class,
+                                                        Duration.ofSeconds(5)))
+                        .toList();
+        CompletableFuture.allOf(parallel.toArray(CompletableFuture[]::new))
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+        assertTrue(
+                parallel.stream()
+                        .map(CompletableFuture::join)
+                        .allMatch(
+                                response ->
+                                        response.player().equals(Optional.of(player))));
+
+        CompletionException timeout =
+                assertThrows(
+                        CompletionException.class,
+                        () ->
+                                proxy.api()
+                                        .request(
+                                                NetworkTargets.instance(
+                                                        "server-eu-1"),
+                                                new PlayerConnectRequest(
+                                                        playerId, "lobby"),
+                                                GlobalBroadcastMessage.class,
+                                                Duration.ofMillis(200))
+                                        .join());
+        assertInstanceOf(RequestTimeoutException.class, timeout.getCause());
+    }
+
+    @Test
+    void slowRequestHandlerDoesNotBlockIndependentRequestsAndReconnect()
+            throws Exception {
+        UUID playerId = UUID.randomUUID();
+        NetworkPlayer player = player(playerId, "server-eu-1");
+        CraftRelayNode proxy =
+                newNode(
+                        "proxy-eu-1",
+                        NetworkInstanceType.PROXY,
+                        Optional.of("proxies"),
+                        Optional.empty());
+        CraftRelayNode server =
+                newNode(
+                        "server-eu-1",
+                        NetworkInstanceType.SERVER,
+                        Optional.of("eu"),
+                        Optional.of(player));
+        CountDownLatch slowStarted = new CountDownLatch(1);
+        CountDownLatch releaseSlow = new CountDownLatch(1);
+        server.requestHandlers()
+                .register(
+                        PlayerConnectRequest.class,
+                        (request, context) -> {
+                            slowStarted.countDown();
+                            try {
+                                releaseSlow.await(10, TimeUnit.SECONDS);
+                            } catch (InterruptedException interruption) {
+                                Thread.currentThread().interrupt();
+                            }
+                            return CompletableFuture.completedFuture(
+                                    new GlobalBroadcastMessage("connected"));
+                        });
+        CompletableFuture.allOf(proxy.start(), server.start())
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+
+        CompletableFuture<GlobalBroadcastMessage> slowResponse =
+                proxy.api()
+                        .request(
+                                NetworkTargets.instance("server-eu-1"),
+                                new PlayerConnectRequest(playerId, "lobby"),
+                                GlobalBroadcastMessage.class,
+                                Duration.ofSeconds(5));
+        assertTrue(slowStarted.await(5, TimeUnit.SECONDS));
+        try {
+            PlayerLocationResponse independent =
+                    proxy.api()
+                            .request(
+                                    NetworkTargets.instance("server-eu-1"),
+                                    new PlayerLocationRequest(playerId),
+                                    PlayerLocationResponse.class,
+                                    Duration.ofSeconds(5))
+                            .orTimeout(5, TimeUnit.SECONDS)
+                            .join();
+            assertEquals(Optional.of(player), independent.player());
+        } finally {
+            releaseSlow.countDown();
+        }
+        assertEquals(
+                "connected",
+                slowResponse.orTimeout(5, TimeUnit.SECONDS).join().content());
+
+        redisProxy.disable();
+        try {
+            await(
+                    () ->
+                            transports.stream()
+                                    .anyMatch(
+                                            transport ->
+                                                    transport.state()
+                                                            == TransportState.CONNECTING),
+                    Duration.ofSeconds(10));
+        } finally {
+            redisProxy.enable();
+        }
+        await(
+                () ->
+                        transports.stream()
+                                .allMatch(
+                                        transport ->
+                                                transport.state()
+                                                        == TransportState.CONNECTED),
+                Duration.ofSeconds(20));
+
+        PlayerLocationResponse afterReconnect =
+                proxy.api()
+                        .request(
+                                NetworkTargets.instance("server-eu-1"),
+                                new PlayerLocationRequest(playerId),
+                                PlayerLocationResponse.class,
+                                Duration.ofSeconds(5))
+                        .orTimeout(10, TimeUnit.SECONDS)
+                        .join();
+        assertEquals(Optional.of(player), afterReconnect.player());
     }
 
     @Test
@@ -459,6 +676,33 @@ class RedisTransportIntegrationTest {
         return runtime;
     }
 
+    private CraftRelayNode newNode(
+            String instanceId,
+            NetworkInstanceType type,
+            Optional<String> group,
+            Optional<NetworkPlayer> player) {
+        CraftRelayNode node =
+                CraftRelayNodes.create(
+                        newTransport(),
+                        new LocalInstanceIdentity(instanceId, type, group),
+                        MessagingRuntimeConfig.defaults(),
+                        new FixedStateProvider(player));
+        nodes.add(node);
+        return node;
+    }
+
+    private static NetworkPlayer player(UUID playerId, String serverId) {
+        Instant now = Instant.now();
+        return new NetworkPlayer(
+                playerId,
+                "IntegrationPlayer",
+                "proxy-eu-1",
+                Optional.of(serverId),
+                UUID.randomUUID(),
+                now,
+                now);
+    }
+
     private static void publishEventually(
             LettuceRedisTransport transport, String channel, byte[] payload, Duration timeout) {
         retryUntil(
@@ -525,5 +769,27 @@ class RedisTransportIntegrationTest {
                                     retryUntil(attempt, deadline, timeout, failureMessage));
                 })
                 .thenCompose(next -> next);
+    }
+
+    private record FixedStateProvider(Optional<NetworkPlayer> playerValue)
+            implements NetworkStateProvider {
+
+        private FixedStateProvider {
+            playerValue =
+                    java.util.Objects.requireNonNull(
+                            playerValue, "playerValue");
+        }
+
+        @Override
+        public CompletableFuture<? extends Collection<NetworkInstance>> instances() {
+            return CompletableFuture.completedFuture(List.of());
+        }
+
+        @Override
+        public CompletableFuture<Optional<NetworkPlayer>> player(UUID playerId) {
+            return CompletableFuture.completedFuture(
+                    playerValue.filter(
+                            player -> player.uniqueId().equals(playerId)));
+        }
     }
 }

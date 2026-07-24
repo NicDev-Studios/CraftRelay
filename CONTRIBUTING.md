@@ -20,7 +20,9 @@ Thank you for your interest in contributing to CraftRelay!
 
 ## Reporting Issues
 
-If you find a bug or have a feature request, please open a GitHub Issue with as much detail as possible.
+If you find a bug or have a feature request, please open a GitHub Issue and include as much relevant information as possible.
+
+**Please do not report security vulnerabilities through public GitHub Issues.** Instead, follow the responsible disclosure process described in `SECURITY.md`.
 
 ## Questions
 

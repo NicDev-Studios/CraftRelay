@@ -21,11 +21,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
+import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.ListenerDispatcher;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageCodec;
@@ -105,9 +107,13 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     }
 
     @Override
-    public CompletableFuture<Void> publish(NetworkTarget target, NetworkMessage message) {
+    public CompletableFuture<Void> publish(
+            NetworkTarget target,
+            NetworkMessage message,
+            Optional<UUID> correlationId) {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(message, "message");
+        Objects.requireNonNull(correlationId, "correlationId");
         if (state != MessagingRuntimeState.RUNNING) {
             return failedFuture("messaging runtime is not running");
         }
@@ -116,7 +122,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         try {
             encoded =
                     codec.encode(
-                            identity.instanceId(), target, message, Optional.empty());
+                            identity.instanceId(), target, message, correlationId);
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
         }
@@ -147,7 +153,8 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         return Subscription.create(() -> removeTypedRegistration(messageType, captured));
     }
 
-    Subscription subscribeDecoded(Consumer<? super DecodedMessage> listener) {
+    @Override
+    public Subscription subscribeDecoded(Consumer<? super DecodedMessage> listener) {
         Objects.requireNonNull(listener, "listener");
         RuntimeRegistration registration;
         synchronized (lifecycleLock) {
@@ -194,7 +201,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             try {
                 receiveSubscription.close();
             } catch (Throwable failure) {
-                cleanupFailure = mergeFailures(cleanupFailure, failure);
+                cleanupFailure = AsyncFailures.merge(cleanupFailure, failure);
             }
         }
         if (activeStart != null && !activeStart.isDone()) {
@@ -205,7 +212,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             try {
                 registration.close();
             } catch (Throwable failure) {
-                cleanupFailure = mergeFailures(cleanupFailure, failure);
+                cleanupFailure = AsyncFailures.merge(cleanupFailure, failure);
             }
         }
 
@@ -213,13 +220,15 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         try {
             transportClose = Objects.requireNonNull(transport.close(), "transport.close()");
         } catch (Throwable failure) {
-            finishClose(operation, mergeFailures(cleanupFailure, failure));
+            finishClose(operation, AsyncFailures.merge(cleanupFailure, failure));
             return operation;
         }
         Throwable priorFailure = cleanupFailure;
         transportClose.whenComplete(
                 (ignored, failure) ->
-                        finishClose(operation, mergeFailures(priorFailure, failure)));
+                        finishClose(
+                                operation,
+                                AsyncFailures.merge(priorFailure, failure)));
         return operation;
     }
 
@@ -259,7 +268,8 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         try {
             listenerDispatcher.close();
         } catch (Throwable dispatcherFailure) {
-            completionFailure = mergeFailures(completionFailure, dispatcherFailure);
+            completionFailure =
+                    AsyncFailures.merge(completionFailure, dispatcherFailure);
         } finally {
             synchronized (lifecycleLock) {
                 state = MessagingRuntimeState.STOPPED;
@@ -375,16 +385,6 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
 
     private static CompletableFuture<Void> failedFuture(String message) {
         return CompletableFuture.failedFuture(new IllegalStateException(message));
-    }
-
-    private static Throwable mergeFailures(Throwable first, Throwable second) {
-        if (first == null) {
-            return second;
-        }
-        if (second != null && second != first) {
-            first.addSuppressed(second);
-        }
-        return first;
     }
 
     private record RuntimeRegistration(

@@ -21,6 +21,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
+import tv.nicdev.craftrelay.api.exception.RequestTimeoutException;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
@@ -57,12 +59,20 @@ public interface CraftRelayApi {
     /**
      * Sends a request and awaits its correlated response.
      *
+     * <p>Requests to groups or broadcast targets use first-response-wins semantics. Delivery is
+     * best-effort because the current transport uses Redis Pub/Sub.
+     *
      * @param target destination of the request
      * @param request request message
      * @param responseType expected response type
-     * @param timeout positive maximum response duration
+     * @param timeout positive, finite maximum response duration
      * @param <R> response type
-     * @return a future containing the response, or completed exceptionally on failure
+     * @return a future containing the first valid correlated response
+     * @throws IllegalArgumentException if the timeout is not positive or the request and response
+     *     use the same concrete Java type
+     * @throws RequestTimeoutException through the returned future if no response arrives in time
+     * @throws ApiUnavailableException through the returned future if the API cannot accept the
+     *     request
      */
     <R extends NetworkMessage> CompletableFuture<R> request(
             NetworkTarget target,

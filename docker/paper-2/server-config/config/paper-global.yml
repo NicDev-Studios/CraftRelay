@@ -1,8 +1,0 @@
-_version: 29
-proxies:
-  bungee-cord:
-    online-mode: true
-  velocity:
-    enabled: true
-    online-mode: true
-    secret: "craftrelay-local-docker-secret"

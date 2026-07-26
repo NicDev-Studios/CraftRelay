@@ -25,17 +25,22 @@ import org.junit.jupiter.api.Test;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 
-class LettuceRedisInstanceStoreTest {
+class LettuceRedisPresenceStoreTest {
 
     @Test
     void validatesLeaseArgumentsBeforeRedisAccess() {
-        LettuceRedisInstanceStore store = new LettuceRedisInstanceStore(
+        LettuceRedisPresenceStore store = new LettuceRedisPresenceStore(
                 RedisTransportConfig.localhost(6379),
-                InstancePresenceConfig.defaults());
+                InstancePresenceConfig.defaults(),
+                PlayerPresenceConfig.defaults());
         NetworkInstance instance = instance("proxy-\uD83C\uDF0D");
         try {
-            assertThrows(NullPointerException.class, () -> store.claim(null, "token", Duration.ofSeconds(1)));
+            assertThrows(
+                    NullPointerException.class,
+                    () -> store.claim(
+                            (NetworkInstance) null, "token", Duration.ofSeconds(1)));
             assertThrows(IllegalArgumentException.class, () -> store.claim(instance, " ", Duration.ofSeconds(1)));
             assertThrows(IllegalArgumentException.class, () -> store.claim(instance, "token", Duration.ZERO));
             assertThrows(IllegalArgumentException.class, () -> store.cleanupExpired(0));
@@ -50,16 +55,33 @@ class LettuceRedisInstanceStoreTest {
         LettuceRedisBackend backend =
                 new LettuceRedisBackend(RedisTransportConfig.localhost(6379));
         LettuceRedisTransport transport = backend.transport();
-        LettuceRedisInstanceStore store =
-                backend.instanceStore(InstancePresenceConfig.defaults());
+        LettuceRedisPresenceStore store =
+                backend.presenceStore(
+                        InstancePresenceConfig.defaults(),
+                        PlayerPresenceConfig.defaults());
 
         assertThrows(IllegalStateException.class, backend::transport);
         assertThrows(
                 IllegalStateException.class,
-                () -> backend.instanceStore(InstancePresenceConfig.defaults()));
+                () -> backend.presenceStore(
+                        InstancePresenceConfig.defaults(),
+                        PlayerPresenceConfig.defaults()));
         transport.close().join();
         store.close().join();
         assertDoesNotThrow(store::close);
+    }
+
+    @Test
+    void rejectsMismatchedPresenceNamespaces() {
+        PlayerPresenceConfig playerConfig = new PlayerPresenceConfig(
+                "players", Duration.ofSeconds(5), Duration.ofSeconds(20), 512);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new LettuceRedisPresenceStore(
+                        RedisTransportConfig.localhost(6379),
+                        InstancePresenceConfig.defaults(),
+                        playerConfig));
     }
 
     private static NetworkInstance instance(String id) {

@@ -18,13 +18,13 @@ package tv.nicdev.craftrelay.common.internal.node;
 import java.util.Objects;
 import java.util.function.IntSupplier;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 import tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimes;
-import tv.nicdev.craftrelay.common.internal.state.NetworkInstanceStore;
-import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
+import tv.nicdev.craftrelay.common.internal.state.NetworkPresenceStore;
 import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 
 /**
@@ -41,8 +41,7 @@ public final class CraftRelayNodes {
      * @param transport message transport
      * @param identity local node identity
      * @param runtimeConfig messaging settings
-     * @param instanceStore authoritative instance store
-     * @param playerStateProvider player-state provider
+     * @param presenceStore authoritative instance/player store
      * @param onlinePlayerCount constant-time local player count
      * @return new node
      */
@@ -50,8 +49,7 @@ public final class CraftRelayNodes {
             NetworkTransport transport,
             LocalInstanceIdentity identity,
             MessagingRuntimeConfig runtimeConfig,
-            NetworkInstanceStore instanceStore,
-            PlayerStateProvider playerStateProvider,
+            NetworkPresenceStore presenceStore,
             IntSupplier onlinePlayerCount) {
         return create(
                 transport,
@@ -59,8 +57,8 @@ public final class CraftRelayNodes {
                 runtimeConfig,
                 RequestRuntimeConfig.defaults(),
                 InstancePresenceConfig.defaults(),
-                instanceStore,
-                playerStateProvider,
+                PlayerPresenceConfig.defaults(),
+                presenceStore,
                 onlinePlayerCount);
     }
 
@@ -71,9 +69,9 @@ public final class CraftRelayNodes {
      * @param identity local node identity
      * @param runtimeConfig messaging settings
      * @param requestConfig request settings
-     * @param presenceConfig instance-presence settings
-     * @param instanceStore authoritative instance store
-     * @param playerStateProvider player-state provider
+     * @param instanceConfig instance-presence settings
+     * @param playerConfig player-presence settings
+     * @param presenceStore authoritative instance/player store
      * @param onlinePlayerCount constant-time local player count
      * @return new node
      */
@@ -82,9 +80,9 @@ public final class CraftRelayNodes {
             LocalInstanceIdentity identity,
             MessagingRuntimeConfig runtimeConfig,
             RequestRuntimeConfig requestConfig,
-            InstancePresenceConfig presenceConfig,
-            NetworkInstanceStore instanceStore,
-            PlayerStateProvider playerStateProvider,
+            InstancePresenceConfig instanceConfig,
+            PlayerPresenceConfig playerConfig,
+            NetworkPresenceStore presenceStore,
             IntSupplier onlinePlayerCount) {
         LocalInstanceIdentity validatedIdentity = Objects.requireNonNull(identity, "identity");
         MessagingRuntime runtime =
@@ -96,9 +94,9 @@ public final class CraftRelayNodes {
                 runtime,
                 validatedIdentity,
                 Objects.requireNonNull(requestConfig, "requestConfig"),
-                Objects.requireNonNull(presenceConfig, "presenceConfig"),
-                Objects.requireNonNull(instanceStore, "instanceStore"),
-                Objects.requireNonNull(playerStateProvider, "playerStateProvider"),
+                Objects.requireNonNull(instanceConfig, "instanceConfig"),
+                Objects.requireNonNull(playerConfig, "playerConfig"),
+                Objects.requireNonNull(presenceStore, "presenceStore"),
                 Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"));
     }
 }

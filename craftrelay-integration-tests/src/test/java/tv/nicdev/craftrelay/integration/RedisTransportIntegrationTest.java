@@ -35,7 +35,6 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -62,14 +61,15 @@ import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNodes;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimes;
-import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
+import tv.nicdev.craftrelay.common.internal.state.PlayerMutationStatus;
 import tv.nicdev.craftrelay.common.transport.TransportState;
 import tv.nicdev.craftrelay.transport.redis.LettuceRedisBackend;
-import tv.nicdev.craftrelay.transport.redis.LettuceRedisInstanceStore;
+import tv.nicdev.craftrelay.transport.redis.LettuceRedisPresenceStore;
 import tv.nicdev.craftrelay.transport.redis.LettuceRedisTransport;
 import tv.nicdev.craftrelay.transport.redis.RedisTransportConfig;
 
@@ -97,7 +97,7 @@ class RedisTransportIntegrationTest {
     private static Proxy redisProxy;
 
     private final List<LettuceRedisTransport> transports = new CopyOnWriteArrayList<>();
-    private final List<LettuceRedisInstanceStore> instanceStores = new CopyOnWriteArrayList<>();
+    private final List<LettuceRedisPresenceStore> presenceStores = new CopyOnWriteArrayList<>();
     private final List<MessagingRuntime> runtimes = new CopyOnWriteArrayList<>();
     private final List<CraftRelayNode> nodes = new CopyOnWriteArrayList<>();
 
@@ -126,8 +126,8 @@ class RedisTransportIntegrationTest {
                         .toArray(CompletableFuture[]::new))
                 .orTimeout(10, TimeUnit.SECONDS)
                 .join();
-        CompletableFuture.allOf(instanceStores.stream()
-                        .map(LettuceRedisInstanceStore::close)
+        CompletableFuture.allOf(presenceStores.stream()
+                        .map(LettuceRedisPresenceStore::close)
                         .toArray(CompletableFuture[]::new))
                 .orTimeout(10, TimeUnit.SECONDS)
                 .join();
@@ -135,32 +135,48 @@ class RedisTransportIntegrationTest {
 
     @Test
     void nodesExposeAuthoritativeSortedPresenceAndRecoverStateReads() throws Exception {
-        AtomicInteger proxyPlayers = new AtomicInteger(3);
+        InstancePresenceConfig fastPresence = new InstancePresenceConfig(
+                "craftrelay", Duration.ofMillis(50), Duration.ofMillis(250), 32);
         CraftRelayNode proxy = newNode(
                 "proxy-eu-1",
                 NetworkInstanceType.PROXY,
                 Optional.of("eu"),
-                Optional.empty(),
-                InstancePresenceConfig.defaults(),
-                proxyPlayers::get);
+                fastPresence,
+                () -> 0);
         CraftRelayNode firstServer = newNode(
                 "server-eu-1",
                 NetworkInstanceType.SERVER,
-                Optional.of("eu"),
-                Optional.empty());
+                Optional.of("eu"));
         CompletableFuture.allOf(proxy.start(), firstServer.start())
                 .orTimeout(10, TimeUnit.SECONDS)
                 .join();
+        for (int index = 0; index < 3; index++) {
+            proxy.playerPresence()
+                    .connect(
+                            UUID.randomUUID(),
+                            "PresencePlayer" + index,
+                            UUID.randomUUID(),
+                            Optional.of("server-eu-1"))
+                    .orTimeout(5, TimeUnit.SECONDS)
+                    .join();
+        }
 
         CraftRelayNode lateServer = newNode(
                 "server-eu-2",
                 NetworkInstanceType.SERVER,
-                Optional.of("eu"),
-                Optional.empty());
+                Optional.of("eu"));
         lateServer.start().orTimeout(10, TimeUnit.SECONDS).join();
 
-        Collection<NetworkInstance> snapshot =
-                proxy.api().instances().orTimeout(5, TimeUnit.SECONDS).join();
+        Collection<NetworkInstance> snapshot = retryUntil(
+                        () -> proxy.api()
+                                .instances()
+                                .thenApply(instances -> instances.stream()
+                                        .anyMatch(instance -> instance.id().equals("proxy-eu-1")
+                                                && instance.onlinePlayerCount() == 3)),
+                        Duration.ofSeconds(5),
+                        "proxy player count was not reflected in instance heartbeat")
+                .thenCompose(ignored -> proxy.api().instances())
+                .join();
         assertEquals(
                 List.of("proxy-eu-1", "server-eu-1", "server-eu-2"),
                 snapshot.stream().map(NetworkInstance::id).toList());
@@ -212,12 +228,10 @@ class RedisTransportIntegrationTest {
         CraftRelayNode owner = newNode(
                 "duplicate-node",
                 NetworkInstanceType.PROXY,
-                Optional.empty(),
                 Optional.empty());
         CraftRelayNode contender = newNode(
                 "duplicate-node",
                 NetworkInstanceType.PROXY,
-                Optional.empty(),
                 Optional.empty());
         owner.start().orTimeout(10, TimeUnit.SECONDS).join();
 
@@ -235,8 +249,8 @@ class RedisTransportIntegrationTest {
         String prefix = "craftrelay-test-" + UUID.randomUUID();
         InstancePresenceConfig presenceConfig = new InstancePresenceConfig(
                 prefix, Duration.ofMillis(50), Duration.ofMillis(250), 16);
-        LettuceRedisInstanceStore oldOwner = newInstanceStore(presenceConfig);
-        LettuceRedisInstanceStore newOwner = newInstanceStore(presenceConfig);
+        LettuceRedisPresenceStore oldOwner = newPresenceStore(presenceConfig);
+        LettuceRedisPresenceStore newOwner = newPresenceStore(presenceConfig);
         CompletableFuture.allOf(oldOwner.connect(), newOwner.connect())
                 .orTimeout(10, TimeUnit.SECONDS)
                 .join();
@@ -255,7 +269,7 @@ class RedisTransportIntegrationTest {
                 7,
                 newOwner.instances().join().iterator().next().onlinePlayerCount());
 
-        LettuceRedisInstanceStore isolated = newInstanceStore(
+        LettuceRedisPresenceStore isolated = newPresenceStore(
                 new InstancePresenceConfig(
                         prefix + "-isolated",
                         Duration.ofMillis(50),
@@ -272,33 +286,146 @@ class RedisTransportIntegrationTest {
     }
 
     @Test
+    void redisPlayerPresenceProtectsSessionsAndSupportsGlobalLookup() {
+        CraftRelayNode firstProxy = newNode(
+                "proxy-player-1",
+                NetworkInstanceType.PROXY,
+                Optional.of("proxies"));
+        CraftRelayNode secondProxy = newNode(
+                "proxy-player-2",
+                NetworkInstanceType.PROXY,
+                Optional.of("proxies"));
+        CompletableFuture.allOf(firstProxy.start(), secondProxy.start())
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+        UUID playerId = UUID.randomUUID();
+        UUID firstSession = UUID.randomUUID();
+
+        NetworkPlayer connected = firstProxy.playerPresence()
+                .connect(playerId, "SessionPlayer", firstSession, Optional.empty())
+                .orTimeout(5, TimeUnit.SECONDS)
+                .join();
+        assertEquals(Optional.of(connected), secondProxy.api().player(playerId).join());
+
+        NetworkPlayer switched = firstProxy.playerPresence()
+                .switchServer(playerId, firstSession, "lobby")
+                .orTimeout(5, TimeUnit.SECONDS)
+                .join();
+        assertEquals(Optional.of("lobby"), switched.serverId());
+        assertEquals(Optional.of(switched), secondProxy.api().player(playerId).join());
+
+        CompletionException conflict = assertThrows(
+                CompletionException.class,
+                () -> secondProxy
+                        .playerPresence()
+                        .connect(
+                                playerId,
+                                "SessionPlayer",
+                                UUID.randomUUID(),
+                                Optional.empty())
+                        .join());
+        assertInstanceOf(
+                tv.nicdev.craftrelay.common.internal.presence.PlayerSessionConflictException.class,
+                conflict.getCause());
+
+        assertTrue(firstProxy.playerPresence().disconnect(playerId, firstSession).join());
+        assertEquals(Optional.empty(), secondProxy.api().player(playerId).join());
+        UUID secondSession = UUID.randomUUID();
+        NetworkPlayer replacement = secondProxy.playerPresence()
+                .connect(playerId, "SessionPlayer", secondSession, Optional.of("survival"))
+                .join();
+        assertFalse(firstProxy.playerPresence().disconnect(playerId, firstSession).join());
+        assertEquals(Optional.of(replacement), firstProxy.api().player(playerId).join());
+
+        secondProxy.close().orTimeout(10, TimeUnit.SECONDS).join();
+        retryUntil(
+                        () -> firstProxy.api().player(playerId).thenApply(Optional::isEmpty),
+                        Duration.ofSeconds(5),
+                        "graceful proxy shutdown retained its player session")
+                .join();
+    }
+
+    @Test
+    void redisPlayerTtlAndNodeLeaseFenceOldProxyRuns() {
+        String prefix = "craftrelay-player-" + UUID.randomUUID();
+        InstancePresenceConfig instanceConfig = new InstancePresenceConfig(
+                prefix, Duration.ofMillis(50), Duration.ofMillis(250), 16);
+        PlayerPresenceConfig playerConfig = new PlayerPresenceConfig(
+                prefix, Duration.ofMillis(50), Duration.ofMillis(250), 16);
+        LettuceRedisPresenceStore oldOwner =
+                newPresenceStore(instanceConfig, playerConfig);
+        LettuceRedisPresenceStore newOwner =
+                newPresenceStore(instanceConfig, playerConfig);
+        CompletableFuture.allOf(oldOwner.connect(), newOwner.connect()).join();
+        NetworkInstance proxy = new NetworkInstance(
+                "proxy-fenced",
+                NetworkInstanceType.PROXY,
+                Optional.empty(),
+                Instant.now(),
+                Instant.now(),
+                0);
+        assertTrue(oldOwner.claim(proxy, "old-token", instanceConfig.instanceTtl()).join());
+        UUID playerId = UUID.randomUUID();
+        NetworkPlayer player = new NetworkPlayer(
+                playerId,
+                "TtlPlayer",
+                proxy.id(),
+                Optional.empty(),
+                UUID.randomUUID(),
+                Instant.now(),
+                Instant.now());
+        assertEquals(
+                PlayerMutationStatus.APPLIED,
+                oldOwner.claim(player, "old-token", playerConfig.playerTtl()).join().status());
+
+        delay(Duration.ofMillis(300)).join();
+        assertEquals(Optional.empty(), newOwner.player(playerId).join());
+        assertTrue(newOwner.claim(proxy, "new-token", instanceConfig.instanceTtl()).join());
+        assertEquals(
+                PlayerMutationStatus.OWNERSHIP_LOST,
+                oldOwner.updateServer(
+                                playerId,
+                                player.sessionId(),
+                                proxy.id(),
+                                "old-token",
+                                Optional.of("stale"),
+                                playerConfig.playerTtl())
+                        .join()
+                        .status());
+    }
+
+    @Test
     void craftRelayNodesExchangeCorrelatedRequestsAcrossRedis()
             throws Exception {
         UUID playerId = UUID.randomUUID();
-        NetworkPlayer player = player(playerId, "server-eu-1");
         CraftRelayNode proxy =
                 newNode(
                         "proxy-eu-1",
                         NetworkInstanceType.PROXY,
-                        Optional.of("proxies"),
-                        Optional.empty());
+                        Optional.of("proxies"));
         CraftRelayNode firstServer =
                 newNode(
                         "server-eu-1",
                         NetworkInstanceType.SERVER,
-                        Optional.of("eu"),
-                        Optional.of(player));
+                        Optional.of("eu"));
         CraftRelayNode secondServer =
                 newNode(
                         "server-eu-2",
                         NetworkInstanceType.SERVER,
-                        Optional.of("eu"),
-                        Optional.empty());
+                        Optional.of("eu"));
         CompletableFuture.allOf(
                         proxy.start(),
                         firstServer.start(),
                         secondServer.start())
                 .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+        NetworkPlayer player = proxy.playerPresence()
+                .connect(
+                        playerId,
+                        "IntegrationPlayer",
+                        UUID.randomUUID(),
+                        Optional.of("server-eu-1"))
+                .orTimeout(5, TimeUnit.SECONDS)
                 .join();
 
         PlayerLocationResponse direct =
@@ -377,19 +504,16 @@ class RedisTransportIntegrationTest {
     void slowRequestHandlerDoesNotBlockIndependentRequestsAndReconnect()
             throws Exception {
         UUID playerId = UUID.randomUUID();
-        NetworkPlayer player = player(playerId, "server-eu-1");
         CraftRelayNode proxy =
                 newNode(
                         "proxy-eu-1",
                         NetworkInstanceType.PROXY,
-                        Optional.of("proxies"),
-                        Optional.empty());
+                        Optional.of("proxies"));
         CraftRelayNode server =
                 newNode(
                         "server-eu-1",
                         NetworkInstanceType.SERVER,
-                        Optional.of("eu"),
-                        Optional.of(player));
+                        Optional.of("eu"));
         CountDownLatch slowStarted = new CountDownLatch(1);
         CountDownLatch releaseSlow = new CountDownLatch(1);
         server.requestHandlers()
@@ -407,6 +531,14 @@ class RedisTransportIntegrationTest {
                         });
         CompletableFuture.allOf(proxy.start(), server.start())
                 .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+        NetworkPlayer player = proxy.playerPresence()
+                .connect(
+                        playerId,
+                        "IntegrationPlayer",
+                        UUID.randomUUID(),
+                        Optional.of("server-eu-1"))
+                .orTimeout(5, TimeUnit.SECONDS)
                 .join();
 
         CompletableFuture<GlobalBroadcastMessage> slowResponse =
@@ -828,13 +960,11 @@ class RedisTransportIntegrationTest {
     private CraftRelayNode newNode(
             String instanceId,
             NetworkInstanceType type,
-            Optional<String> group,
-            Optional<NetworkPlayer> player) {
+            Optional<String> group) {
         return newNode(
                 instanceId,
                 type,
                 group,
-                player,
                 InstancePresenceConfig.defaults(),
                 () -> 0);
     }
@@ -843,7 +973,6 @@ class RedisTransportIntegrationTest {
             String instanceId,
             NetworkInstanceType type,
             Optional<String> group,
-            Optional<NetworkPlayer> player,
             InstancePresenceConfig presenceConfig,
             java.util.function.IntSupplier onlinePlayerCount) {
         RedisTransportConfig redisConfig = new RedisTransportConfig(
@@ -862,16 +991,22 @@ class RedisTransportIntegrationTest {
                         transport,
                         new LocalInstanceIdentity(instanceId, type, group),
                         MessagingRuntimeConfig.defaults(),
-                        backend.instanceStore(presenceConfig),
-                        new FixedPlayerStateProvider(player),
+                        backend.presenceStore(
+                                presenceConfig, playerConfig(presenceConfig)),
                         onlinePlayerCount);
         nodes.add(node);
         return node;
     }
 
-    private LettuceRedisInstanceStore newInstanceStore(
+    private LettuceRedisPresenceStore newPresenceStore(
             InstancePresenceConfig presenceConfig) {
-        LettuceRedisInstanceStore store = new LettuceRedisInstanceStore(
+        return newPresenceStore(presenceConfig, playerConfig(presenceConfig));
+    }
+
+    private LettuceRedisPresenceStore newPresenceStore(
+            InstancePresenceConfig presenceConfig,
+            PlayerPresenceConfig playerPresenceConfig) {
+        LettuceRedisPresenceStore store = new LettuceRedisPresenceStore(
                 new RedisTransportConfig(
                         TOXIPROXY.getHost(),
                         TOXIPROXY.getMappedPort(PROXY_PORT),
@@ -880,9 +1015,19 @@ class RedisTransportIntegrationTest {
                         0,
                         false,
                         Duration.ofSeconds(5)),
-                presenceConfig);
-        instanceStores.add(store);
+                presenceConfig,
+                playerPresenceConfig);
+        presenceStores.add(store);
         return store;
+    }
+
+    private static PlayerPresenceConfig playerConfig(
+            InstancePresenceConfig instanceConfig) {
+        return new PlayerPresenceConfig(
+                instanceConfig.keyPrefix(),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(20),
+                instanceConfig.cleanupBatch());
     }
 
     private static NetworkInstance instance(String id, int onlinePlayerCount) {
@@ -894,18 +1039,6 @@ class RedisTransportIntegrationTest {
                 now,
                 now,
                 onlinePlayerCount);
-    }
-
-    private static NetworkPlayer player(UUID playerId, String serverId) {
-        Instant now = Instant.now();
-        return new NetworkPlayer(
-                playerId,
-                "IntegrationPlayer",
-                "proxy-eu-1",
-                Optional.of(serverId),
-                UUID.randomUUID(),
-                now,
-                now);
     }
 
     private static void publishEventually(
@@ -983,20 +1116,4 @@ class RedisTransportIntegrationTest {
                         duration.toNanos(), TimeUnit.NANOSECONDS));
     }
 
-    private record FixedPlayerStateProvider(Optional<NetworkPlayer> playerValue)
-            implements PlayerStateProvider {
-
-        private FixedPlayerStateProvider {
-            playerValue =
-                    java.util.Objects.requireNonNull(
-                            playerValue, "playerValue");
-        }
-
-        @Override
-        public CompletableFuture<Optional<NetworkPlayer>> player(UUID playerId) {
-            return CompletableFuture.completedFuture(
-                    playerValue.filter(
-                            player -> player.uniqueId().equals(playerId)));
-        }
-    }
 }

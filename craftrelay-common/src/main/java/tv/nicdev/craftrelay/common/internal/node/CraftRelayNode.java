@@ -17,6 +17,7 @@ package tv.nicdev.craftrelay.common.internal.node;
 
 import java.util.concurrent.CompletableFuture;
 import tv.nicdev.craftrelay.api.CraftRelayApi;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistry;
 
 /**
@@ -44,6 +45,13 @@ public interface CraftRelayNode {
      * @return request-handler registry
      */
     RequestHandlerRegistry requestHandlers();
+
+    /**
+     * Returns the internal platform-facing player-presence mutations.
+     *
+     * @return player presence
+     */
+    PlayerPresence playerPresence();
 
     /**
      * Stops the node and all owned resources.

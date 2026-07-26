@@ -22,11 +22,12 @@ import io.lettuce.core.TimeoutOptions;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 
 /**
  * Shared Lettuce client and event-loop owner for one CraftRelay node.
  *
- * <p>Create the transport and instance store before starting either component. Closing the store
+ * <p>Create the transport and presence store before starting either component. Closing the store
  * after the transport closes the shared client. Standalone {@link LettuceRedisTransport}
  * construction remains supported.
  */
@@ -64,22 +65,27 @@ public final class LettuceRedisBackend {
         }
     }
 
-    /** Creates this backend's sole authoritative instance store. */
-    public LettuceRedisInstanceStore instanceStore(InstancePresenceConfig config) {
+    /** Creates this backend's sole authoritative instance/player presence store. */
+    public LettuceRedisPresenceStore presenceStore(
+            InstancePresenceConfig instanceConfig, PlayerPresenceConfig playerConfig) {
         synchronized (lock) {
             ensureOpen();
             if (storeCreated) {
-                throw new IllegalStateException("Redis instance store already created");
+                throw new IllegalStateException("Redis presence store already created");
             }
             storeCreated = true;
-            return new LettuceRedisInstanceStore(this, config, true);
+            return new LettuceRedisPresenceStore(
+                    this,
+                    Objects.requireNonNull(instanceConfig, "instanceConfig"),
+                    Objects.requireNonNull(playerConfig, "playerConfig"),
+                    true);
         }
     }
 
     /**
      * Idempotently shuts down the shared Lettuce client.
      *
-     * <p>A composed node normally reaches this through its instance store. Callers that only
+     * <p>A composed node normally reaches this through its presence store. Callers that only
      * create a subset of the backend components must close the backend explicitly.
      */
     public CompletableFuture<Void> close() {

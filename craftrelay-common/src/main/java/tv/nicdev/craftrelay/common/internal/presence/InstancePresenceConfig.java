@@ -16,7 +16,6 @@
 package tv.nicdev.craftrelay.common.internal.presence;
 
 import java.time.Duration;
-import java.util.Objects;
 
 /**
  * Immutable settings for distributed instance presence.
@@ -34,32 +33,18 @@ public record InstancePresenceConfig(
 
     /** Creates validated presence settings. */
     public InstancePresenceConfig {
-        Objects.requireNonNull(keyPrefix, "keyPrefix");
-        if (keyPrefix.isBlank()) {
-            throw new IllegalArgumentException("keyPrefix must not be blank");
-        }
-        heartbeatInterval = requirePositive(heartbeatInterval, "heartbeatInterval");
-        instanceTtl = requirePositive(instanceTtl, "instanceTtl");
-        if (instanceTtl.compareTo(heartbeatInterval.multipliedBy(2)) < 0) {
-            throw new IllegalArgumentException(
-                    "instanceTtl must be at least twice heartbeatInterval");
-        }
-        if (cleanupBatch < 1) {
-            throw new IllegalArgumentException("cleanupBatch must be positive");
-        }
+        keyPrefix = PresenceValidation.requirePrefix(keyPrefix);
+        heartbeatInterval =
+                PresenceValidation.requirePositive(heartbeatInterval, "heartbeatInterval");
+        instanceTtl = PresenceValidation.requirePositive(instanceTtl, "instanceTtl");
+        PresenceValidation.requireLeaseRatio(
+                heartbeatInterval, "heartbeatInterval", instanceTtl, "instanceTtl");
+        cleanupBatch = PresenceValidation.requirePositiveBatch(cleanupBatch, "cleanupBatch");
     }
 
     /** Returns defaults: {@code craftrelay}, 5 seconds, 20 seconds, and 512 entries. */
     public static InstancePresenceConfig defaults() {
         return new InstancePresenceConfig(
                 "craftrelay", Duration.ofSeconds(5), Duration.ofSeconds(20), 512);
-    }
-
-    private static Duration requirePositive(Duration value, String name) {
-        Objects.requireNonNull(value, name);
-        if (value.isZero() || value.isNegative()) {
-            throw new IllegalArgumentException(name + " must be positive");
-        }
-        return value;
     }
 }

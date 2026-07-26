@@ -15,6 +15,6 @@
  */
 
 /**
- * Internal instance-store and player-state boundaries.
+ * Internal instance/player presence-store and read-model boundaries.
  */
 package tv.nicdev.craftrelay.common.internal.state;

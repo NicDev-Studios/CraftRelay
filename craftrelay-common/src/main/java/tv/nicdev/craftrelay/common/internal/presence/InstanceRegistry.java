@@ -20,7 +20,6 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
@@ -62,7 +61,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
     private final Consumer<? super Throwable> leaseLossHandler;
     private final Clock clock;
     private final Instant startedAt;
-    private final String leaseToken = UUID.randomUUID().toString();
+    private final NodeLease nodeLease;
     private final ScheduledExecutorService executor;
 
     private RegistryState state = RegistryState.NEW;
@@ -85,6 +84,26 @@ public final class InstanceRegistry implements InstanceStateProvider {
                 runtime,
                 identity,
                 config,
+                NodeLease.create(),
+                onlinePlayerCount,
+                leaseLossHandler);
+    }
+
+    /** Creates an instance registry using the node-wide presence lease. */
+    public InstanceRegistry(
+            NetworkInstanceStore store,
+            MessagingRuntime runtime,
+            LocalInstanceIdentity identity,
+            InstancePresenceConfig config,
+            NodeLease nodeLease,
+            IntSupplier onlinePlayerCount,
+            Consumer<? super Throwable> leaseLossHandler) {
+        this(
+                store,
+                runtime,
+                identity,
+                config,
+                nodeLease,
                 onlinePlayerCount,
                 leaseLossHandler,
                 Clock.systemUTC());
@@ -98,10 +117,31 @@ public final class InstanceRegistry implements InstanceStateProvider {
             IntSupplier onlinePlayerCount,
             Consumer<? super Throwable> leaseLossHandler,
             Clock clock) {
+        this(
+                store,
+                runtime,
+                identity,
+                config,
+                NodeLease.create(),
+                onlinePlayerCount,
+                leaseLossHandler,
+                clock);
+    }
+
+    InstanceRegistry(
+            NetworkInstanceStore store,
+            MessagingRuntime runtime,
+            LocalInstanceIdentity identity,
+            InstancePresenceConfig config,
+            NodeLease nodeLease,
+            IntSupplier onlinePlayerCount,
+            Consumer<? super Throwable> leaseLossHandler,
+            Clock clock) {
         this.store = Objects.requireNonNull(store, "store");
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.config = Objects.requireNonNull(config, "config");
+        this.nodeLease = Objects.requireNonNull(nodeLease, "nodeLease");
         this.onlinePlayerCount = Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount");
         this.leaseLossHandler = Objects.requireNonNull(leaseLossHandler, "leaseLossHandler");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -337,7 +377,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
     private CompletableFuture<Boolean> claim(NetworkInstance snapshot) {
         try {
             return Objects.requireNonNull(
-                    store.claim(snapshot, leaseToken, config.instanceTtl()),
+                    store.claim(snapshot, nodeLease.token(), config.instanceTtl()),
                     "store.claim()");
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
@@ -347,7 +387,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
     private CompletableFuture<Boolean> heartbeat(NetworkInstance snapshot) {
         try {
             return Objects.requireNonNull(
-                    store.heartbeat(snapshot, leaseToken, config.instanceTtl()),
+                    store.heartbeat(snapshot, nodeLease.token(), config.instanceTtl()),
                     "store.heartbeat()");
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);
@@ -357,7 +397,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
     private CompletableFuture<Boolean> release() {
         try {
             return Objects.requireNonNull(
-                    store.release(identity.instanceId(), leaseToken),
+                    store.release(identity.instanceId(), nodeLease.token()),
                     "store.release()");
         } catch (RuntimeException failure) {
             return CompletableFuture.failedFuture(failure);

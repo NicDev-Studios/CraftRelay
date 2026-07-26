@@ -14,5 +14,5 @@
  * limitations under the License.
  */
 
-/** Internal lifecycle and configuration for distributed instance presence. */
+/** Internal lifecycle, configuration, and platform boundary for distributed presence. */
 package tv.nicdev.craftrelay.common.internal.presence;

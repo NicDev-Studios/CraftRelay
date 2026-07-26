@@ -96,8 +96,14 @@ public interface CraftRelayApi {
     /**
      * Looks up a player by unique ID.
      *
+     * <p>The immutable point-in-time snapshot is read from CraftRelay's authoritative Redis
+     * presence registry. A player from a crashed proxy remains visible only until the configured
+     * player TTL expires. If the state store is unavailable, the future fails with
+     * {@link ApiUnavailableException}.
+     *
      * @param playerId player unique ID
      * @return a future containing the player when currently known
+     * @throws ApiUnavailableException asynchronously when the presence store is unavailable
      */
     CompletableFuture<Optional<NetworkPlayer>> player(UUID playerId);
 

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 /**
- * Lettuce-based Redis transport implementation for CraftRelay.
+ * Lettuce-based Redis transport and authoritative presence implementation for CraftRelay.
  *
  * <p>The types in this package are implementation building blocks and are not third-party plugin
  * API.

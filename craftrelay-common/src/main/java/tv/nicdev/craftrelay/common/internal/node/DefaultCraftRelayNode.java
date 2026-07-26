@@ -30,14 +30,18 @@ import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatcher;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.presence.InstanceRegistry;
+import tv.nicdev.craftrelay.common.internal.presence.NodeLease;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerRegistry;
 import tv.nicdev.craftrelay.common.internal.request.PendingRequestManager;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistries;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistry;
 import tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
-import tv.nicdev.craftrelay.common.internal.state.NetworkInstanceStore;
-import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
+import tv.nicdev.craftrelay.common.internal.state.NetworkPresenceStore;
+import tv.nicdev.craftrelay.common.internal.state.PlayerSessionKey;
 
 final class DefaultCraftRelayNode implements CraftRelayNode {
 
@@ -46,12 +50,12 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
 
     private final Object lifecycleLock = new Object();
     private final MessagingRuntime runtime;
-    private final PlayerStateProvider playerStateProvider;
     private final FutureCompletionDispatcher completionDispatcher =
             new FutureCompletionDispatcher("craftrelay-api-completion-");
     private final PendingRequestManager requestManager;
     private final RequestHandlerRegistry requestHandlers;
     private final InstanceRegistry instanceRegistry;
+    private final PlayerRegistry playerRegistry;
     private final CraftRelayApi api;
 
     private volatile NodeState state = NodeState.NEW;
@@ -62,13 +66,25 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             MessagingRuntime runtime,
             LocalInstanceIdentity identity,
             RequestRuntimeConfig requestConfig,
-            InstancePresenceConfig presenceConfig,
-            NetworkInstanceStore instanceStore,
-            PlayerStateProvider playerStateProvider,
+            InstancePresenceConfig instanceConfig,
+            PlayerPresenceConfig playerConfig,
+            NetworkPresenceStore presenceStore,
             IntSupplier onlinePlayerCount) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
-        this.playerStateProvider =
-                Objects.requireNonNull(playerStateProvider, "playerStateProvider");
+        Objects.requireNonNull(instanceConfig, "instanceConfig");
+        Objects.requireNonNull(playerConfig, "playerConfig")
+                .validateCompatible(instanceConfig);
+        Objects.requireNonNull(presenceStore, "presenceStore");
+        LocalInstanceIdentity localIdentity = Objects.requireNonNull(identity, "identity");
+        NodeLease nodeLease = NodeLease.create();
+        playerRegistry =
+                new PlayerRegistry(
+                        presenceStore,
+                        runtime,
+                        localIdentity,
+                        playerConfig,
+                        nodeLease,
+                        this::handlePlayerOwnershipLoss);
         requestManager =
                 new PendingRequestManager(runtime, requestConfig, completionDispatcher);
         requestHandlers =
@@ -78,11 +94,15 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                 (request, context) -> locationResponse(request));
         instanceRegistry =
                 new InstanceRegistry(
-                        instanceStore,
+                        presenceStore,
                         runtime,
-                        identity,
-                        presenceConfig,
-                        onlinePlayerCount,
+                        localIdentity,
+                        instanceConfig,
+                        nodeLease,
+                        localIdentity.instanceType()
+                                        == tv.nicdev.craftrelay.api.model.NetworkInstanceType.PROXY
+                                ? playerRegistry::onlinePlayerCount
+                                : Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
                         this::handleLeaseLoss);
         api =
                 new DefaultCraftRelayApi(
@@ -90,7 +110,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                         runtime,
                         requestManager,
                         instanceRegistry,
-                        playerStateProvider,
+                        playerRegistry,
                         completionDispatcher);
     }
 
@@ -119,6 +139,9 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                             completionDispatcher::execute)
                     .thenComposeAsync(
                             ignored -> startStage(instanceRegistry::start, "instanceRegistry.start()"),
+                            completionDispatcher::execute)
+                    .thenComposeAsync(
+                            ignored -> startStage(playerRegistry::start, "playerRegistry.start()"),
                             completionDispatcher::execute);
         } catch (RuntimeException failure) {
             completeStart(operation, failure);
@@ -139,6 +162,11 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
     }
 
     @Override
+    public PlayerPresence playerPresence() {
+        return playerRegistry;
+    }
+
+    @Override
     public CompletableFuture<Void> close() {
         CompletableFuture<Void> operation;
         synchronized (lifecycleLock) {
@@ -150,11 +178,14 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             closeFuture = operation;
         }
 
-        Throwable immediateFailure = closeRequestSystem();
         closeStage(
-                        immediateFailure,
-                        instanceRegistry::stop,
-                        "instanceRegistry.stop()")
+                        null,
+                        playerRegistry::stop,
+                        "playerRegistry.stop()")
+                .thenApply(failure ->
+                        AsyncFailures.merge(failure, closeRequestSystem()))
+                .thenCompose(failure -> closeStage(
+                        failure, instanceRegistry::stop, "instanceRegistry.stop()"))
                 .thenCompose(failure -> closeStage(
                         failure, runtime::close, "runtime.close()"))
                 .thenCompose(failure -> closeStage(
@@ -183,8 +214,8 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             PlayerLocationRequest request) {
         CompletableFuture<Optional<NetworkPlayer>> playerFuture =
                 Objects.requireNonNull(
-                        playerStateProvider.player(request.playerId()),
-                        "playerStateProvider.player()");
+                        playerRegistry.player(request.playerId()),
+                        "playerRegistry.player()");
         return completionDispatcher.relay(
                 playerFuture,
                 player ->
@@ -280,6 +311,12 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                 "CraftRelay instance lease was lost; stopping node",
                 failure);
         close();
+    }
+
+    private void handlePlayerOwnershipLoss(PlayerSessionKey session) {
+        LOGGER.log(
+                System.Logger.Level.WARNING,
+                "Local player session ownership was lost: " + session);
     }
 
     private static <T> CompletableFuture<T> requireFuture(

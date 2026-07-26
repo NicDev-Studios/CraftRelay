@@ -45,8 +45,9 @@ import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 import tv.nicdev.craftrelay.common.testing.TestNetworkTransport;
-import tv.nicdev.craftrelay.common.testing.TestNetworkInstanceStore;
+import tv.nicdev.craftrelay.common.testing.TestNetworkPresenceStore;
 
 class CraftRelayNodeTest {
 
@@ -59,12 +60,11 @@ class CraftRelayNodeTest {
         NetworkPlayer player = player(playerId);
         List<NetworkInstance> mutableInstances =
                 new ArrayList<>(List.of(instance("proxy-1")));
-        TestNetworkInstanceStore instanceStore = new TestNetworkInstanceStore();
+        TestNetworkPresenceStore instanceStore = new TestNetworkPresenceStore();
         mutableInstances.forEach(value -> instanceStore.seed(value, "seed"));
-        TestPlayerStateProvider playerStateProvider =
-                new TestPlayerStateProvider(Optional.of(player));
+        instanceStore.seed(player, "seed");
         CraftRelayNode node =
-                node(new TestNetworkTransport(), instanceStore, playerStateProvider);
+                node(new TestNetworkTransport(), instanceStore);
         CraftRelayApi api = node.api();
 
         assertEquals(CraftRelayState.INITIALIZING, api.state());
@@ -129,8 +129,7 @@ class CraftRelayNodeTest {
         transport.failNextConnects(1);
         CraftRelayNode node = node(
                 transport,
-                new TestNetworkInstanceStore(),
-                TestPlayerStateProvider.empty());
+                new TestNetworkPresenceStore());
         CraftRelayApi api = node.api();
 
         assertThrows(
@@ -153,7 +152,7 @@ class CraftRelayNodeTest {
 
     @Test
     void lostInstanceLeaseTriggersControlledNodeShutdown() {
-        TestNetworkInstanceStore store = new TestNetworkInstanceStore();
+        TestNetworkPresenceStore store = new TestNetworkPresenceStore();
         CraftRelayNode node = CraftRelayNodes.create(
                 new TestNetworkTransport(),
                 new LocalInstanceIdentity(
@@ -164,8 +163,9 @@ class CraftRelayNodeTest {
                 tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig.defaults(),
                 new InstancePresenceConfig(
                         "test", Duration.ofMillis(20), Duration.ofMillis(100), 8),
+                new PlayerPresenceConfig(
+                        "test", Duration.ofMillis(20), Duration.ofMillis(100), 8),
                 store,
-                TestPlayerStateProvider.empty(),
                 () -> 0);
         node.start().join();
 
@@ -180,8 +180,7 @@ class CraftRelayNodeTest {
 
     private static CraftRelayNode node(
             TestNetworkTransport transport,
-            TestNetworkInstanceStore instanceStore,
-            TestPlayerStateProvider playerStateProvider) {
+            TestNetworkPresenceStore presenceStore) {
         return CraftRelayNodes.create(
                 transport,
                 new LocalInstanceIdentity(
@@ -189,8 +188,7 @@ class CraftRelayNodeTest {
                         NetworkInstanceType.PROXY,
                         Optional.of("eu")),
                 MessagingRuntimeConfig.defaults(),
-                instanceStore,
-                playerStateProvider,
+                presenceStore,
                 () -> 0);
     }
 
@@ -253,24 +251,4 @@ class CraftRelayNodeTest {
                 .thenCompose(ignored -> awaitState(api, expected, deadline));
     }
 
-    private record TestPlayerStateProvider(Optional<NetworkPlayer> playerValue)
-            implements tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider {
-
-        private TestPlayerStateProvider {
-            playerValue =
-                    java.util.Objects.requireNonNull(
-                            playerValue, "playerValue");
-        }
-
-        private static TestPlayerStateProvider empty() {
-            return new TestPlayerStateProvider(Optional.empty());
-        }
-
-        @Override
-        public CompletableFuture<Optional<NetworkPlayer>> player(UUID playerId) {
-            return CompletableFuture.completedFuture(
-                    playerValue.filter(
-                            value -> value.uniqueId().equals(playerId)));
-        }
-    }
 }

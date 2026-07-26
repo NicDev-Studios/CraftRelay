@@ -38,7 +38,7 @@ import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.testing.TestMessagingRuntime;
-import tv.nicdev.craftrelay.common.testing.TestNetworkInstanceStore;
+import tv.nicdev.craftrelay.common.testing.TestNetworkPresenceStore;
 
 class InstanceRegistryTest {
 
@@ -48,7 +48,7 @@ class InstanceRegistryTest {
 
     @Test
     void startsHeartbeatsWithStableStartTimeAndDynamicPlayerCount() throws Exception {
-        TestNetworkInstanceStore store = new TestNetworkInstanceStore();
+        TestNetworkPresenceStore store = new TestNetworkPresenceStore();
         TestMessagingRuntime runtime = new TestMessagingRuntime();
         AtomicInteger players = new AtomicInteger(2);
         CountDownLatch heartbeat = new CountDownLatch(1);
@@ -85,7 +85,7 @@ class InstanceRegistryTest {
 
     @Test
     void failedAnnouncementRollsBackLeaseAndAllowsRetry() {
-        TestNetworkInstanceStore store = new TestNetworkInstanceStore();
+        TestNetworkPresenceStore store = new TestNetworkPresenceStore();
         TestMessagingRuntime runtime = new TestMessagingRuntime();
         runtime.onPublish(published -> {
             if (published.message() instanceof InstanceStartedMessage) {
@@ -136,7 +136,7 @@ class InstanceRegistryTest {
 
     @Test
     void rejectedClaimNeverPublishesAStopForTheActualOwner() {
-        TestNetworkInstanceStore store = new TestNetworkInstanceStore();
+        TestNetworkPresenceStore store = new TestNetworkPresenceStore();
         Instant now = Instant.now();
         store.seed(
                 new NetworkInstance(
@@ -160,7 +160,7 @@ class InstanceRegistryTest {
     }
 
     private static InstanceRegistry registry(
-            TestNetworkInstanceStore store,
+            TestNetworkPresenceStore store,
             TestMessagingRuntime runtime,
             AtomicInteger players,
             java.util.function.Consumer<? super Throwable> leaseLossHandler) {
@@ -192,7 +192,7 @@ class InstanceRegistryTest {
     private static class DelegatingTestStore
             implements tv.nicdev.craftrelay.common.internal.state.NetworkInstanceStore {
 
-        private final TestNetworkInstanceStore delegate = new TestNetworkInstanceStore();
+        private final TestNetworkPresenceStore delegate = new TestNetworkPresenceStore();
 
         @Override
         public CompletableFuture<Void> connect() {

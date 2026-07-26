@@ -45,7 +45,7 @@ import tv.nicdev.craftrelay.common.transport.TransportState;
  *
  * <p>It uses one regular connection for publishing and a separate Pub/Sub connection for
  * receiving. A directly constructed transport owns its Redis backend; a transport created by
- * {@link LettuceRedisBackend} shares that backend with the instance store.
+ * {@link LettuceRedisBackend} shares that backend with the presence store.
  */
 public final class LettuceRedisTransport implements NetworkTransport {
 

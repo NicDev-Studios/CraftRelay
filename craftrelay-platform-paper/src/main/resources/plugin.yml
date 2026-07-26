@@ -1,0 +1,7 @@
+name: CraftRelay
+version: "${version}"
+main: tv.nicdev.craftrelay.platform.paper.CraftRelayPaperPlugin
+description: Redis-backed Minecraft network synchronization
+author: NicDev-Studios
+api-version: "1.20.6"
+load: STARTUP

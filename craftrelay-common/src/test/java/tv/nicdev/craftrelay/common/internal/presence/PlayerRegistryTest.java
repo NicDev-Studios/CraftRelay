@@ -100,6 +100,28 @@ class PlayerRegistryTest {
     }
 
     @Test
+    void failedDisconnectStopsRefreshingTheDepartedLocalSession() {
+        TestNetworkPresenceStore store = new TestNetworkPresenceStore();
+        PlayerRegistry registry =
+                registry(store, new TestMessagingRuntime(), "proxy-a", NodeLease.create());
+        store.connect().join();
+        registry.start().join();
+        UUID playerId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        registry.connect(playerId, "Player", sessionId, Optional.empty()).join();
+        store.failNextPlayerRelease();
+
+        CompletionException failure = assertThrows(
+                CompletionException.class,
+                () -> registry.disconnect(playerId, sessionId).join());
+
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals(0, registry.onlinePlayerCount());
+        registry.stop().join();
+        store.close().join();
+    }
+
+    @Test
     void serverNodesRemainReadOnly() {
         TestNetworkPresenceStore store = new TestNetworkPresenceStore();
         TestMessagingRuntime runtime = new TestMessagingRuntime();

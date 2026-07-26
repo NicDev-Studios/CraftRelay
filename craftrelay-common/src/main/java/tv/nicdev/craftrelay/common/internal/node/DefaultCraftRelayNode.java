@@ -33,6 +33,7 @@ import tv.nicdev.craftrelay.common.internal.presence.InstanceRegistry;
 import tv.nicdev.craftrelay.common.internal.presence.NodeLease;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerOwnershipListener;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerRegistry;
 import tv.nicdev.craftrelay.common.internal.request.PendingRequestManager;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistries;
@@ -56,6 +57,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
     private final RequestHandlerRegistry requestHandlers;
     private final InstanceRegistry instanceRegistry;
     private final PlayerRegistry playerRegistry;
+    private final PlayerOwnershipListener ownershipListener;
     private final CraftRelayApi api;
 
     private volatile NodeState state = NodeState.NEW;
@@ -69,8 +71,11 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             InstancePresenceConfig instanceConfig,
             PlayerPresenceConfig playerConfig,
             NetworkPresenceStore presenceStore,
-            IntSupplier onlinePlayerCount) {
+            IntSupplier onlinePlayerCount,
+            PlayerOwnershipListener ownershipListener) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
+        this.ownershipListener =
+                Objects.requireNonNull(ownershipListener, "ownershipListener");
         Objects.requireNonNull(instanceConfig, "instanceConfig");
         Objects.requireNonNull(playerConfig, "playerConfig")
                 .validateCompatible(instanceConfig);
@@ -317,6 +322,14 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
         LOGGER.log(
                 System.Logger.Level.WARNING,
                 "Local player session ownership was lost: " + session);
+        try {
+            ownershipListener.onOwnershipLost(session);
+        } catch (RuntimeException failure) {
+            LOGGER.log(
+                    System.Logger.Level.ERROR,
+                    "Player ownership listener failed for " + session,
+                    failure);
+        }
     }
 
     private static <T> CompletableFuture<T> requireFuture(

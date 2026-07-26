@@ -43,6 +43,7 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
 
     private boolean connected;
     private boolean closed;
+    private boolean failNextPlayerRelease;
 
     public synchronized void seed(NetworkInstance instance, String token) {
         NetworkInstance value = Objects.requireNonNull(instance, "instance");
@@ -56,6 +57,10 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
 
     public int heartbeatCalls() {
         return heartbeatCalls.get();
+    }
+
+    public synchronized void failNextPlayerRelease() {
+        failNextPlayerRelease = true;
     }
 
     public synchronized void forceRemove(String instanceId) {
@@ -167,6 +172,11 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
     public synchronized CompletableFuture<PlayerMutationResult> release(
             UUID playerId, UUID sessionId, String proxyId, String nodeLeaseToken) {
         requireConnected();
+        if (failNextPlayerRelease) {
+            failNextPlayerRelease = false;
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("simulated player release failure"));
+        }
         PlayerLease existing = players.get(playerId);
         if (!owns(existing, sessionId, proxyId, nodeLeaseToken)) {
             return CompletableFuture.completedFuture(lost());

@@ -18,6 +18,7 @@ package tv.nicdev.craftrelay.common.internal.node;
 import java.util.Objects;
 import java.util.function.IntSupplier;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerOwnershipListener;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 import tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
@@ -59,7 +60,8 @@ public final class CraftRelayNodes {
                 InstancePresenceConfig.defaults(),
                 PlayerPresenceConfig.defaults(),
                 presenceStore,
-                onlinePlayerCount);
+                onlinePlayerCount,
+                PlayerOwnershipListener.NOOP);
     }
 
     /**
@@ -84,6 +86,42 @@ public final class CraftRelayNodes {
             PlayerPresenceConfig playerConfig,
             NetworkPresenceStore presenceStore,
             IntSupplier onlinePlayerCount) {
+        return create(
+                transport,
+                identity,
+                runtimeConfig,
+                requestConfig,
+                instanceConfig,
+                playerConfig,
+                presenceStore,
+                onlinePlayerCount,
+                PlayerOwnershipListener.NOOP);
+    }
+
+    /**
+     * Creates a node with explicit settings and a player-ownership listener.
+     *
+     * @param transport message transport
+     * @param identity local node identity
+     * @param runtimeConfig messaging settings
+     * @param requestConfig request settings
+     * @param instanceConfig instance-presence settings
+     * @param playerConfig player-presence settings
+     * @param presenceStore authoritative instance/player store
+     * @param onlinePlayerCount constant-time local player count
+     * @param ownershipListener lost-session listener
+     * @return new node
+     */
+    public static CraftRelayNode create(
+            NetworkTransport transport,
+            LocalInstanceIdentity identity,
+            MessagingRuntimeConfig runtimeConfig,
+            RequestRuntimeConfig requestConfig,
+            InstancePresenceConfig instanceConfig,
+            PlayerPresenceConfig playerConfig,
+            NetworkPresenceStore presenceStore,
+            IntSupplier onlinePlayerCount,
+            PlayerOwnershipListener ownershipListener) {
         LocalInstanceIdentity validatedIdentity = Objects.requireNonNull(identity, "identity");
         MessagingRuntime runtime =
                 MessagingRuntimes.create(
@@ -97,6 +135,7 @@ public final class CraftRelayNodes {
                 Objects.requireNonNull(instanceConfig, "instanceConfig"),
                 Objects.requireNonNull(playerConfig, "playerConfig"),
                 Objects.requireNonNull(presenceStore, "presenceStore"),
-                Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"));
+                Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
+                Objects.requireNonNull(ownershipListener, "ownershipListener"));
     }
 }

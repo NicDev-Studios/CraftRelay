@@ -1,6 +1,7 @@
 dependencies {
     api(project(":craftrelay-common"))
     implementation(libs.lettuce.core)
+    implementation(libs.snakeyaml.engine)
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)

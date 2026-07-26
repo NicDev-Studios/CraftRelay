@@ -1,0 +1,204 @@
+/*
+ * Copyright 2026 NicDev-Studios
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package tv.nicdev.craftrelay.platform.velocity;
+
+import com.velocitypowered.api.event.EventTask;
+import com.velocitypowered.api.event.ResultedEvent.ComponentResult;
+import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
+import com.velocitypowered.api.event.connection.LoginEvent;
+import com.velocitypowered.api.event.player.ServerPostConnectEvent;
+import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import net.kyori.adventure.text.Component;
+import tv.nicdev.craftrelay.api.message.PlayerConnectRequest;
+import tv.nicdev.craftrelay.api.model.NetworkPlayer;
+import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
+import tv.nicdev.craftrelay.common.internal.presence.PlayerSessionConflictException;
+import tv.nicdev.craftrelay.common.internal.state.PlayerSessionKey;
+
+/** Bridges Velocity player lifecycle events to distributed player presence. */
+final class VelocityPlayerBridge {
+
+    private static final System.Logger LOGGER =
+            System.getLogger(VelocityPlayerBridge.class.getName());
+
+    private final Object plugin;
+    private final ProxyServer server;
+    private final PlayerPresence presence;
+    private final String unavailableMessage;
+    private final String duplicateMessage;
+    private final LocalPlayerSessions sessions = new LocalPlayerSessions();
+
+    VelocityPlayerBridge(
+            Object plugin,
+            ProxyServer server,
+            PlayerPresence presence,
+            String unavailableMessage,
+            String duplicateMessage) {
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
+        this.server = Objects.requireNonNull(server, "server");
+        this.presence = Objects.requireNonNull(presence, "presence");
+        this.unavailableMessage = requireText(unavailableMessage, "unavailableMessage");
+        this.duplicateMessage = requireText(duplicateMessage, "duplicateMessage");
+    }
+
+    @Subscribe
+    public EventTask onLogin(LoginEvent event) {
+        Objects.requireNonNull(event, "event");
+        if (!event.getResult().isAllowed()) {
+            return null;
+        }
+
+        Player player = event.getPlayer();
+        UUID sessionId = UUID.randomUUID();
+        CompletableFuture<NetworkPlayer> claim;
+        try {
+            claim = Objects.requireNonNull(
+                    presence.connect(
+                            player.getUniqueId(),
+                            player.getUsername(),
+                            sessionId,
+                            Optional.empty()),
+                    "presence.connect()");
+        } catch (RuntimeException failure) {
+            denyLogin(event, player, failure);
+            return null;
+        }
+        return EventTask.resumeWhenComplete(claim.handle((snapshot, failure) -> {
+            if (failure == null) {
+                sessions.set(player.getUniqueId(), sessionId);
+            } else {
+                denyLogin(event, player, failure);
+            }
+            return null;
+        }));
+    }
+
+    @Subscribe
+    public EventTask onServerPostConnect(ServerPostConnectEvent event) {
+        Player player = Objects.requireNonNull(event, "event").getPlayer();
+        Optional<UUID> session = sessions.find(player.getUniqueId());
+        Optional<String> serverId = player.getCurrentServer()
+                .map(connection -> connection.getServerInfo().getName());
+        if (session.isEmpty() || serverId.isEmpty()) {
+            return null;
+        }
+        return EventTask.resumeWhenComplete(presence
+                .switchServer(player.getUniqueId(), session.orElseThrow(), serverId.orElseThrow())
+                .handle((ignored, failure) -> {
+                    logMutationFailure("server switch", player.getUniqueId(), failure);
+                    return null;
+                }));
+    }
+
+    @Subscribe
+    public EventTask onDisconnect(DisconnectEvent event) {
+        Player player = Objects.requireNonNull(event, "event").getPlayer();
+        Optional<UUID> session = sessions.remove(player.getUniqueId());
+        if (session.isEmpty()) {
+            return null;
+        }
+        return EventTask.resumeWhenComplete(presence
+                .disconnect(player.getUniqueId(), session.orElseThrow())
+                .handle((ignored, failure) -> {
+                    logMutationFailure("disconnect", player.getUniqueId(), failure);
+                    return null;
+                }));
+    }
+
+    void handleConnectRequest(PlayerConnectRequest request) {
+        Objects.requireNonNull(request, "request");
+        if (sessions.find(request.playerId()).isEmpty()) {
+            return;
+        }
+        Optional<Player> player = server.getPlayer(request.playerId());
+        Optional<RegisteredServer> destination = server.getServer(request.serverId())
+                .filter(server -> server.getServerInfo().getName().equals(request.serverId()));
+        if (player.isEmpty()) {
+            return;
+        }
+        if (destination.isEmpty()) {
+            LOGGER.log(
+                    System.Logger.Level.WARNING,
+                    "Unknown Velocity server in PlayerConnectRequest: " + request.serverId());
+            return;
+        }
+        player.orElseThrow()
+                .createConnectionRequest(destination.orElseThrow())
+                .connect()
+                .whenComplete((result, failure) -> {
+                    if (failure != null) {
+                        LOGGER.log(
+                                System.Logger.Level.WARNING,
+                                "Player connection request failed for " + request.playerId(),
+                                AsyncFailures.unwrap(failure));
+                    } else if (!result.isSuccessful()) {
+                        LOGGER.log(
+                                System.Logger.Level.WARNING,
+                                "Velocity rejected player connection request for "
+                                        + request.playerId() + ": " + result.getStatus());
+                    }
+                });
+    }
+
+    void handleOwnershipLoss(PlayerSessionKey session) {
+        Objects.requireNonNull(session, "session");
+        if (!sessions.remove(session.playerId(), session.sessionId())) {
+            return;
+        }
+        server.getScheduler()
+                .buildTask(plugin, () -> server.getPlayer(session.playerId())
+                        .ifPresent(player -> player.disconnect(Component.text(unavailableMessage))))
+                .schedule();
+    }
+
+    private static void logMutationFailure(
+            String operation, UUID playerId, Throwable failure) {
+        if (failure != null) {
+            LOGGER.log(
+                    System.Logger.Level.WARNING,
+                    "Player presence " + operation + " failed for " + playerId,
+                    AsyncFailures.unwrap(failure));
+        }
+    }
+
+    private void denyLogin(LoginEvent event, Player player, Throwable failure) {
+        Throwable cause = AsyncFailures.unwrap(failure);
+        String message = cause instanceof PlayerSessionConflictException
+                ? duplicateMessage
+                : unavailableMessage;
+        event.setResult(ComponentResult.denied(Component.text(message)));
+        LOGGER.log(
+                System.Logger.Level.WARNING,
+                "Player presence claim failed for " + player.getUniqueId(),
+                cause);
+    }
+
+    private static String requireText(String value, String name) {
+        Objects.requireNonNull(value, name);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        return value;
+    }
+}

@@ -313,7 +313,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
     }
 
     private CompletableFuture<Boolean> release(UUID playerId, UUID sessionId) {
-        return store.release(
+        CompletableFuture<Boolean> release = store.release(
                         playerId, sessionId, identity.instanceId(), nodeLease.token())
                 .thenComposeAsync(result -> {
                     if (result.status() != PlayerMutationStatus.APPLIED) {
@@ -322,12 +322,14 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                     }
                     NetworkPlayer removed = result.previous().orElseThrow(
                             () -> new IllegalStateException("Release did not return a player"));
-                    localPlayers.computeIfPresent(
-                            playerId,
-                            (ignored, current) ->
-                                    current.sessionId().equals(sessionId) ? null : current);
+                    forgetLocalSession(playerId, sessionId);
                     return publishDisconnect(removed).thenApply(ignored -> true);
                 }, mutationExecutor);
+        return release.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                forgetLocalSession(playerId, sessionId);
+            }
+        });
     }
 
     private <T> CompletableFuture<T> acceptedMutation(
@@ -445,6 +447,13 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                 logFailure("Player ownership-loss callback failed", failure);
             }
         }
+    }
+
+    private void forgetLocalSession(UUID playerId, UUID sessionId) {
+        localPlayers.computeIfPresent(
+                playerId,
+                (ignored, current) ->
+                        current.sessionId().equals(sessionId) ? null : current);
     }
 
     private CompletableFuture<Void> cleanupStaleSessions() {

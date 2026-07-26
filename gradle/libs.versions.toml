@@ -9,6 +9,8 @@ mariadb = "3.5.9"
 junit = "6.1.2"
 testcontainers = "2.0.5"
 slf4j = "2.0.18"
+snakeyaml = "3.0.1"
+shadow = "9.6.1"
 
 [libraries]
 paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
@@ -25,3 +27,7 @@ testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "
 testcontainers-junit-jupiter = { module = "org.testcontainers:testcontainers-junit-jupiter", version.ref = "testcontainers" }
 testcontainers-toxiproxy = { module = "org.testcontainers:testcontainers-toxiproxy", version.ref = "testcontainers" }
 slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+snakeyaml-engine = { module = "org.snakeyaml:snakeyaml-engine", version.ref = "snakeyaml" }
+
+[plugins]
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }

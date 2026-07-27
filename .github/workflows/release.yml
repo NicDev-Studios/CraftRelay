@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must use a semantic version such as v0.1.0." >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve human contributors
+        id: contributors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/contributors?per_page=100")"
+          authors="$(jq -r '
+            [.[][] |
+              select(.type == "User") |
+              .login |
+              select(test("\\[bot\\]$"; "i") | not) |
+              select(test("bot$"; "i") | not)
+            ] |
+            reduce .[] as $login
+              ([]; if index($login) then . else . + [$login] end) |
+            .[:10] |
+            join(",")
+          ' <<<"$response")"
+          if [[ -z "$authors" ]]; then
+            echo "No human GitHub contributors were returned; refusing to build release metadata." >&2
+            exit 1
+          fi
+          echo "authors=$authors" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test release artifacts
+        run: >
+          ./gradlew
+          clean
+          build
+          integrationTest
+          :craftrelay-platform-paper:shadowJar
+          :craftrelay-platform-velocity:shadowJar
+          :craftrelay-example-plugin:paper:shadowJar
+          :craftrelay-example-plugin:velocity:shadowJar
+          -PcraftrelayVersion=${{ steps.version.outputs.value }}
+          -PcraftrelayAuthors=${{ steps.contributors.outputs.authors }}
+          --no-daemon
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-test-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: warn
+
+      - name: Upload plugin artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: craftrelay-${{ github.ref_name }}
+          path: |
+            craftrelay-platform-paper/build/libs/craftrelay-platform-paper-${{ steps.version.outputs.value }}.jar
+            craftrelay-platform-velocity/build/libs/craftrelay-platform-velocity-${{ steps.version.outputs.value }}.jar
+            craftrelay-example-plugin/paper/build/libs/craftrelay-example-paper-${{ steps.version.outputs.value }}.jar
+            craftrelay-example-plugin/velocity/build/libs/craftrelay-example-velocity-${{ steps.version.outputs.value }}.jar
+          if-no-files-found: error
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            craftrelay-platform-paper/build/libs/craftrelay-platform-paper-${{ steps.version.outputs.value }}.jar \
+            craftrelay-platform-velocity/build/libs/craftrelay-platform-velocity-${{ steps.version.outputs.value }}.jar \
+            craftrelay-example-plugin/paper/build/libs/craftrelay-example-paper-${{ steps.version.outputs.value }}.jar \
+            craftrelay-example-plugin/velocity/build/libs/craftrelay-example-velocity-${{ steps.version.outputs.value }}.jar \
+            --draft \
+            --generate-notes \
+            --title "CraftRelay $GITHUB_REF_NAME"
+
+      - name: Publish CraftRelay API to Maven Central
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: >
+          ./gradlew
+          :craftrelay-api:publishAndReleaseToMavenCentral
+          -PcraftrelayVersion=${{ steps.version.outputs.value }}
+          --no-daemon

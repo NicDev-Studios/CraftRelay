@@ -32,8 +32,19 @@ class PaperPluginMetadataTest {
             String metadata = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(metadata.contains(
                     "main: tv.nicdev.craftrelay.platform.paper.CraftRelayPaperPlugin"));
+            assertTrue(metadata.contains(
+                    "version: \"" + System.getProperty("craftrelayVersion") + '"'));
             assertTrue(metadata.contains("api-version: \"1.20.6\""));
+            assertTrue(metadata.contains("authors: " + expectedYamlAuthors()));
             assertFalse(metadata.contains("${version}"));
+            assertFalse(metadata.contains("${authors}"));
         }
+    }
+
+    private static String expectedYamlAuthors() {
+        return java.util.Arrays.stream(
+                        System.getProperty("craftrelayAuthors").split(","))
+                .map(author -> "\"" + author + "\"")
+                .collect(java.util.stream.Collectors.joining(", ", "[", "]"));
     }
 }

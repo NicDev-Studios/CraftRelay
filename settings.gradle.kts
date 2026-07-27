@@ -27,5 +27,7 @@ include(
     "craftrelay-platform-paper",
     "craftrelay-platform-velocity",
     "craftrelay-example-plugin",
+    "craftrelay-example-plugin:paper",
+    "craftrelay-example-plugin:velocity",
     "craftrelay-integration-tests",
 )

@@ -18,7 +18,10 @@ dependencies {
 }
 
 tasks.processResources {
-    val properties = mapOf("version" to project.version.toString())
+    val properties = mapOf(
+        "version" to project.version.toString(),
+        "authors" to project.extra["craftrelayAuthorsListLiteral"],
+    )
     inputs.properties(properties)
     filesMatching("plugin.yml") {
         expand(properties)

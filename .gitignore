@@ -1,6 +1,7 @@
 # Gradle
 .gradle/
 build/
+docker/.generated/
 **/build/
 
 # IntelliJ IDEA
@@ -22,3 +23,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local Docker developer overrides
+docker/.env

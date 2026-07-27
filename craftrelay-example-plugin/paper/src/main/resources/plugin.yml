@@ -1,0 +1,16 @@
+name: CraftRelayExample
+version: "${version}"
+main: tv.nicdev.craftrelay.example.paper.CraftRelayExamplePaperPlugin
+description: CraftRelay developer integration example
+authors: ${authors}
+api-version: "1.20.6"
+depend: [CraftRelay]
+commands:
+  craftrelayexample:
+    aliases: [crelay]
+    permission: craftrelay.example.admin
+    usage: "/crelay <state|instances|player|broadcast|connect>"
+permissions:
+  craftrelay.example.admin:
+    description: Allows use of the CraftRelay example command
+    default: op

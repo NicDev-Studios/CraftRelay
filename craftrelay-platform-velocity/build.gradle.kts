@@ -4,20 +4,23 @@ plugins {
     alias(libs.plugins.shadow)
 }
 
-val generatedVersionSources =
-    layout.buildDirectory.dir("generated/sources/craftrelayVersion/java/main")
+val generatedEntryPointSources =
+    layout.buildDirectory.dir("generated/sources/craftrelayEntryPoint/java/main")
 
-val generateCraftRelayVersion = tasks.register<Sync>("generateCraftRelayVersion") {
-    val properties = mapOf("version" to project.version.toString())
+val generateCraftRelayEntryPoint = tasks.register<Sync>("generateCraftRelayEntryPoint") {
+    val properties = mapOf(
+        "version" to project.version.toString(),
+        "authors" to project.extra["craftrelayAuthorsJavaLiteral"],
+    )
     inputs.properties(properties)
     from("src/main/templates") {
         expand(properties)
     }
-    into(generatedVersionSources)
+    into(generatedEntryPointSources)
 }
 
 sourceSets.main {
-    java.srcDir(generatedVersionSources)
+    java.srcDir(generatedEntryPointSources)
 }
 
 dependencies {
@@ -35,12 +38,12 @@ dependencies {
 }
 
 tasks.compileJava {
-    dependsOn(generateCraftRelayVersion)
+    dependsOn(generateCraftRelayEntryPoint)
     options.compilerArgs.add("-Xlint:-processing")
 }
 
 tasks.sourcesJar {
-    dependsOn(generateCraftRelayVersion)
+    dependsOn(generateCraftRelayEntryPoint)
 }
 
 tasks.jar {

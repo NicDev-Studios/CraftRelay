@@ -11,6 +11,7 @@ testcontainers = "2.0.5"
 slf4j = "2.0.18"
 snakeyaml = "3.0.1"
 shadow = "9.6.1"
+maven-publish = "0.37.0"
 
 [libraries]
 paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
@@ -31,3 +32,4 @@ snakeyaml-engine = { module = "org.snakeyaml:snakeyaml-engine", version.ref = "s
 
 [plugins]
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
+maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "maven-publish" }

@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import tv.nicdev.craftrelay.platform.velocity.internal.player.LocalPlayerSessions;
 
 class LocalPlayerSessionsTest {
 

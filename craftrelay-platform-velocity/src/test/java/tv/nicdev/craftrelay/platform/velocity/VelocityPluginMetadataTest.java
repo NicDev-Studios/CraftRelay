@@ -31,9 +31,18 @@ class VelocityPluginMetadataTest {
             assertNotNull(input);
             String metadata = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             assertTrue(metadata.contains("\"id\":\"craftrelay\""));
-            assertTrue(metadata.contains("\"version\":\"0.1.0-SNAPSHOT\""));
+            assertTrue(metadata.contains(
+                    "\"version\":\"" + System.getProperty("craftrelayVersion") + '"'));
+            assertTrue(metadata.contains("\"authors\":" + expectedJsonAuthors()));
             assertTrue(metadata.contains(
                     "\"main\":\"tv.nicdev.craftrelay.platform.velocity.CraftRelayVelocityPlugin\""));
         }
+    }
+
+    private static String expectedJsonAuthors() {
+        return java.util.Arrays.stream(
+                        System.getProperty("craftrelayAuthors").split(","))
+                .map(author -> "\"" + author + "\"")
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
     }
 }

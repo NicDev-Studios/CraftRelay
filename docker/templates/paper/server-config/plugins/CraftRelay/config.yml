@@ -1,0 +1,34 @@
+instance:
+  id: "paper-1"
+  group: "docker"
+
+redis:
+  host: "redis"
+  port: 6379
+  username: null
+  password: null
+  database: 0
+  tls: false
+  connection-timeout: "5s"
+
+messaging:
+  prefix: "craftrelay-docker"
+  duplicate-cache-capacity: 10000
+
+requests:
+  maximum-pending: 4096
+
+presence:
+  instance:
+    heartbeat-interval: "5s"
+    ttl: "20s"
+    cleanup-batch: 512
+  player:
+    refresh-interval: "5s"
+    ttl: "20s"
+    batch-size: 512
+
+platform:
+  shutdown-timeout: "10s"
+  login-unavailable-message: "The network service is currently unavailable. Please try again."
+  duplicate-session-message: "This account is already connected to the network."

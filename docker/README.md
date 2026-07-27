@@ -50,7 +50,11 @@ PAPER_OPS=YourMinecraftName
 
 `PAPER_COUNT` and `VELOCITY_COUNT` accept values from 1 through 10. Gradle
 generates unique service names, CraftRelay instance IDs, volumes, proxy ports,
-and Velocity backend lists before Docker Compose starts.
+and Velocity backend lists before Docker Compose starts. The generated container
+names are `craftrelay-redis`, `craftrelay-paper-1`, `craftrelay-paper-2`, and
+so on; Docker Compose does not append a project or replica suffix. `devSmoke`
+uses the separate `craftrelay-smoke` prefix, so it cannot collide with a
+running development topology.
 
 Every Paper server uses the selected version. Values supported by the
 `itzg/minecraft-server` Paper image can be selected; CraftRelay itself targets

@@ -27,6 +27,7 @@ import java.util.logging.Level;
 import org.bukkit.plugin.java.JavaPlugin;
 import tv.nicdev.craftrelay.api.CraftRelayApi;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
+import tv.nicdev.craftrelay.common.internal.CraftRelayStartupBanner;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerOwnershipListener;
@@ -40,7 +41,6 @@ import tv.nicdev.craftrelay.transport.redis.config.CraftRelayRedisConfig;
 public final class PaperPluginLifecycle {
 
     private static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(10);
-
     private final JavaPlugin plugin;
     private final PaperApiService apiService;
     private final AtomicBoolean stopping = new AtomicBoolean();
@@ -60,6 +60,9 @@ public final class PaperPluginLifecycle {
 
     /** Starts the node asynchronously. */
     public void start() {
+        for (String bannerLine : CraftRelayStartupBanner.lines()) {
+            plugin.getLogger().info(bannerLine);
+        }
         PaperPlayerCounter playerCounter =
                 new PaperPlayerCounter(plugin.getServer().getOnlinePlayers().size());
         plugin.getServer().getPluginManager().registerEvents(playerCounter, plugin);

@@ -22,11 +22,13 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
 import tv.nicdev.craftrelay.api.CraftRelayApi;
 import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
 import tv.nicdev.craftrelay.api.message.PlayerConnectRequest;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
+import tv.nicdev.craftrelay.common.internal.CraftRelayStartupBanner;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
 import tv.nicdev.craftrelay.platform.velocity.CraftRelayReadyEvent;
@@ -40,12 +42,10 @@ import tv.nicdev.craftrelay.transport.redis.config.CraftRelayRedisConfig;
 /** Owns Velocity node composition, API publication, and shutdown. */
 public final class VelocityPluginLifecycle {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(VelocityPluginLifecycle.class.getName());
-
     private final Object plugin;
     private final ProxyServer server;
     private final Path dataDirectory;
+    private final Logger logger;
     private final AtomicBoolean stopping = new AtomicBoolean();
     private final AtomicReference<CraftRelayApi> publicApi = new AtomicReference<>();
     private final AtomicReference<VelocityPlayerPresenceListener> presenceListener =
@@ -60,11 +60,14 @@ public final class VelocityPluginLifecycle {
      * @param plugin owning plugin
      * @param server active proxy
      * @param dataDirectory plugin data directory
+     * @param logger plugin logger
      */
-    public VelocityPluginLifecycle(Object plugin, ProxyServer server, Path dataDirectory) {
+    public VelocityPluginLifecycle(
+            Object plugin, ProxyServer server, Path dataDirectory, Logger logger) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.server = Objects.requireNonNull(server, "server");
         this.dataDirectory = Objects.requireNonNull(dataDirectory, "dataDirectory");
+        this.logger = Objects.requireNonNull(logger, "logger");
     }
 
     /**
@@ -73,6 +76,9 @@ public final class VelocityPluginLifecycle {
      * @return startup completion
      */
     public CompletableFuture<Void> start() {
+        for (String bannerLine : CraftRelayStartupBanner.lines()) {
+            logger.info(bannerLine);
+        }
         CompletableFuture<Void> startup;
         try {
             CraftRelayRedisConfig settings = CraftRelayConfigFiles.loadOrCreate(dataDirectory);
@@ -108,12 +114,9 @@ public final class VelocityPluginLifecycle {
 
         startup.whenComplete((ignored, failure) -> {
             if (failure == null) {
-                LOGGER.log(System.Logger.Level.INFO, "CraftRelay is available on Velocity");
+                logger.info("CraftRelay is available on Velocity");
             } else {
-                LOGGER.log(
-                        System.Logger.Level.ERROR,
-                        "CraftRelay failed to start",
-                        AsyncFailures.unwrap(failure));
+                logger.error("CraftRelay failed to start", AsyncFailures.unwrap(failure));
                 closeAfterFailedStart();
             }
         });
@@ -164,8 +167,7 @@ public final class VelocityPluginLifecycle {
                         .fire(new CraftRelayReadyEvent(api))
                         .whenComplete((ignored, failure) -> {
                             if (failure != null) {
-                                LOGGER.log(
-                                        System.Logger.Level.WARNING,
+                                logger.warn(
                                         "A CraftRelayReadyEvent listener failed",
                                         AsyncFailures.unwrap(failure));
                             }
@@ -210,10 +212,7 @@ public final class VelocityPluginLifecycle {
             if (completion != null) {
                 completion.completeExceptionally(failure);
             } else {
-                LOGGER.log(
-                        System.Logger.Level.WARNING,
-                        "Could not schedule Velocity lifecycle cleanup",
-                        failure);
+                logger.warn("Could not schedule Velocity lifecycle cleanup", failure);
             }
         }
     }

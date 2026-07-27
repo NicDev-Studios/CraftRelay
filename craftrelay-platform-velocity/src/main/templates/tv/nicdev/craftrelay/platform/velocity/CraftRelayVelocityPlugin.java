@@ -25,6 +25,7 @@ import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
 import java.nio.file.Path;
 import java.util.Optional;
+import org.slf4j.Logger;
 import tv.nicdev.craftrelay.api.CraftRelayApi;
 import tv.nicdev.craftrelay.api.CraftRelayProvider;
 import tv.nicdev.craftrelay.platform.velocity.internal.lifecycle.VelocityPluginLifecycle;
@@ -45,11 +46,12 @@ public final class CraftRelayVelocityPlugin implements CraftRelayProvider {
      *
      * @param server active proxy
      * @param dataDirectory plugin-owned data directory
+     * @param logger plugin logger
      */
     @Inject
     public CraftRelayVelocityPlugin(
-            ProxyServer server, @DataDirectory Path dataDirectory) {
-        lifecycle = new VelocityPluginLifecycle(this, server, dataDirectory);
+            ProxyServer server, @DataDirectory Path dataDirectory, Logger logger) {
+        lifecycle = new VelocityPluginLifecycle(this, server, dataDirectory, logger);
     }
 
     @Override

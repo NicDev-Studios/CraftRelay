@@ -152,6 +152,7 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
         appendLine()
         appendLine("services:")
         appendLine("  redis:")
+        appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay}-redis")
         appendLine("    image: redis:7.4.2-alpine")
         appendLine("""    command: ["redis-server", "--save", "", "--appendonly", "no"]""")
         appendLine("    healthcheck:")
@@ -178,6 +179,7 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
 
     private fun StringBuilder.appendPaper(number: Int) {
         appendLine("  paper-$number:")
+        appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay}-paper-$number")
         appendLine("    image: itzg/minecraft-server:java21")
         appendLine("    environment:")
         appendLine("""      EULA: "TRUE"""")
@@ -213,6 +215,7 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
 
     private fun StringBuilder.appendVelocity(number: Int, port: Int, paperCount: Int) {
         appendLine("  velocity-$number:")
+        appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay}-velocity-$number")
         appendLine("    image: itzg/mc-proxy:java21")
         appendLine("    environment:")
         appendLine("""      TYPE: "VELOCITY"""")
@@ -343,10 +346,11 @@ abstract class DockerSmokeTask : DefaultTask() {
             "--file",
             composeFile.get().asFile.absolutePath,
         ) + arguments
-        val process = ProcessBuilder(command)
+        val processBuilder = ProcessBuilder(command)
             .directory(repositoryDirectory.get().asFile)
             .redirectErrorStream(true)
-            .start()
+        processBuilder.environment()["CRAFTRELAY_CONTAINER_PREFIX"] = composeProjectName.get()
+        val process = processBuilder.start()
         val output = process.inputStream.bufferedReader(StandardCharsets.UTF_8).use {
             it.readText()
         }

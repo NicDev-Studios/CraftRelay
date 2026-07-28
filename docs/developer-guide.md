@@ -62,6 +62,65 @@ API replacement and plugin shutdown.
 Redis Pub/Sub remains best effort. A successful publish means Redis accepted
 the payload, not that every target processed it.
 
+## Custom messages
+
+Custom messages are explicit local registrations. Register the same identifier,
+payload version, Java class, and JSON meaning on every node that sends or
+receives the message:
+
+```java
+public record WarpRequest(UUID playerId, String warp) implements NetworkMessage {}
+
+MessageType<WarpRequest> warpRequest =
+        MessageType.of("myplugin", "warp_request", 1, WarpRequest.class);
+
+MessagePayloadCodec<WarpRequest> codec = new MessagePayloadCodec<>() {
+    @Override
+    public byte[] encode(WarpRequest message) {
+        return gson.toJson(message).getBytes(StandardCharsets.UTF_8);
+    }
+
+    @Override
+    public WarpRequest decode(byte[] payload) {
+        return gson.fromJson(
+                new String(payload, StandardCharsets.UTF_8),
+                WarpRequest.class);
+    }
+};
+
+Subscription registration =
+        api.customMessaging().register(warpRequest, codec);
+```
+
+The codec may use any JSON library owned by the integrating plugin. Its output
+must contain exactly one UTF-8 JSON object. CraftRelay validates the object and
+never obtains a Java class name from the network. The `craftrelay` namespace is
+reserved for built-in messages.
+
+`publish`, `subscribe`, and `request` work with the registered Java class. A
+custom request handler additionally requires its response type to be registered:
+
+```java
+Subscription handler = api.customMessaging().handle(
+        warpRequest,
+        warpResponse,
+        (request, context) ->
+                warpService.find(request.playerId(), request.warp())
+                        .thenApply(WarpResponse::new));
+```
+
+The handler runs away from Redis and platform I/O threads. CraftRelay correlates
+the response and sends it back to the requesting instance automatically.
+Exactly one handler may be active locally for a request type. Handler failures
+produce no remote error message; the caller's request completes with its
+configured timeout.
+
+Use a new positive payload version and a different Java class for an
+incompatible schema. During a rolling upgrade, register both versions where
+compatibility is required. CraftRelay does not distribute registrations or
+migrate payloads. Closing a registration prevents future encoding and decoding
+of that type; already-running work may finish using its captured snapshot.
+
 ## Example commands
 
 Both example plugins register `/craftrelayexample` and `/crelay` with
@@ -80,38 +139,3 @@ chat output when the Paper example is installed as well. Both adapters render
 their output with MiniMessage. Dynamic API and command values are inserted as
 unparsed placeholders, so player names, server IDs, and broadcast content
 cannot inject MiniMessage tags.
-
-## Plugin author metadata
-
-This setting is relevant only to CraftRelay maintainers. It fills the author
-list in the Paper and Velocity plugin descriptors; it does not affect the API,
-network protocol, or runtime behavior. Local metadata builds can override it:
-
-```shell
-./gradlew build -PcraftrelayAuthors=NicDevTV,ContributorTwo
-```
-
-Names are trimmed, empty entries are rejected, duplicates are removed in input
-order, and the list is limited to 10. Local and normal CI builds default to
-`NicDev-Studios`. Tag release builds obtain human contributor logins from
-GitHub automatically and fail if no valid list can be produced. Plugins using
-CraftRelay do not need to set this property.
-
-## Creating a release
-
-The release workflow is triggered by a semantic version tag. Prepare and push
-the release commit, then create and push the tag:
-
-```shell
-git tag -a v0.1.0 -m "CraftRelay v0.1.0"
-git push origin v0.1.0
-```
-
-GitHub Actions validates the tag, builds version `0.1.0`, runs unit and Redis
-integration tests, resolves the top 10 human contributors, and creates a draft
-GitHub release containing the four installable Paper/Velocity JARs. Review its
-generated notes and artifacts in GitHub, then publish the draft manually.
-
-After creating the draft GitHub release, the workflow signs and publishes
-`de.nicdevtv:craftrelay-api` through the Maven Central Portal. Maven Central
-releases are immutable; a correction requires a new patch version.

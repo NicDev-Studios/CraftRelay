@@ -123,6 +123,7 @@ class JacksonMessageCodecTest {
                         MESSAGE_ID,
                         1,
                         "craftrelay:global_broadcast",
+                        1,
                         "proxy-1",
                         NetworkTargets.allServers(),
                         NOW,

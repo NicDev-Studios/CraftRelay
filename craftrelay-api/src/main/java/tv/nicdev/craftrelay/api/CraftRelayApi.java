@@ -22,6 +22,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
+import tv.nicdev.craftrelay.api.messaging.CustomMessaging;
 import tv.nicdev.craftrelay.api.exception.RequestTimeoutException;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
@@ -35,6 +36,16 @@ import tv.nicdev.craftrelay.api.target.NetworkTarget;
  * and must not perform blocking work.
  */
 public interface CraftRelayApi {
+
+    /**
+     * Returns the local registry for explicitly allowed custom message types and request handlers.
+     *
+     * <p>Registrations are local to this node. Every node that sends or receives a custom message
+     * must register the same identifier, payload version, and JSON representation.
+     *
+     * @return stable custom-messaging facade
+     */
+    CustomMessaging customMessaging();
 
     /**
      * Publishes a message to the selected network target.

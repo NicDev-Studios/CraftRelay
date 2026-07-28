@@ -116,7 +116,8 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                         requestManager,
                         instanceRegistry,
                         playerRegistry,
-                        completionDispatcher);
+                        completionDispatcher,
+                        new DefaultCustomMessaging(this, runtime, requestHandlers));
     }
 
     @Override

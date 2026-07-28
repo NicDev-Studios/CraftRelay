@@ -22,10 +22,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
+import tv.nicdev.craftrelay.api.NetworkMessage;
+import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.exception.InvalidMessageException;
 import tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage;
 import tv.nicdev.craftrelay.api.message.PlayerLocationRequest;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 
 class MessageRegistryTest {
 
@@ -87,5 +92,74 @@ class MessageRegistryTest {
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> registry.snapshot().clear());
+    }
+
+    @Test
+    void customRegistrationsSupportVersionsAndTokenSafeRemoval() {
+        MessageRegistry registry = MessageRegistry.withStandardMessages();
+        MessageType<CustomV1> first =
+                MessageType.of("example", "custom", 1, CustomV1.class);
+        MessageType<CustomV2> second =
+                MessageType.of("example", "custom", 2, CustomV2.class);
+
+        Subscription firstRegistration = registry.registerCustom(first, codec(CustomV1::new));
+        registry.registerCustom(second, codec(CustomV2::new));
+
+        assertEquals(CustomV1.class, registry.bindingFor("example:custom", 1).messageClass());
+        assertEquals(CustomV2.class, registry.bindingFor("example:custom", 2).messageClass());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> registry.registerCustom(first, codec(CustomV1::new)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        registry.registerCustom(
+                                MessageType.of("example", "other", 3, CustomV1.class),
+                                codec(CustomV1::new)));
+
+        firstRegistration.close();
+        firstRegistration.close();
+        assertThrows(
+                InvalidMessageException.class,
+                () -> registry.bindingFor("example:custom", 1));
+        assertEquals(CustomV2.class, registry.bindingFor("example:custom", 2).messageClass());
+    }
+
+    @Test
+    void closingCustomRegistrationsPreservesBuiltIns() {
+        MessageRegistry registry = MessageRegistry.withStandardMessages();
+        registry.registerCustom(
+                MessageType.of("example", "custom", 1, CustomV1.class),
+                codec(CustomV1::new));
+
+        registry.closeCustomRegistrations();
+
+        assertEquals(
+                GlobalBroadcastMessage.class,
+                registry.bindingFor("craftrelay:global_broadcast", 1).messageClass());
+        assertThrows(
+                InvalidMessageException.class,
+                () -> registry.bindingFor("example:custom", 1));
+    }
+
+    private static <M extends NetworkMessage> MessagePayloadCodec<M> codec(
+            java.util.function.Function<String, M> factory) {
+        return new MessagePayloadCodec<>() {
+            @Override
+            public byte[] encode(M message) {
+                return "{}".getBytes(StandardCharsets.UTF_8);
+            }
+
+            @Override
+            public M decode(byte[] payload) {
+                return factory.apply("decoded");
+            }
+        };
+    }
+
+    private record CustomV1(String value) implements NetworkMessage {
+    }
+
+    private record CustomV2(String value) implements NetworkMessage {
     }
 }

@@ -21,16 +21,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.ListenerDispatcher;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageCodec;
+import tv.nicdev.craftrelay.common.internal.protocol.PreparedMessage;
 import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 
 final class DefaultMessagingRuntime implements MessagingRuntime {
@@ -49,6 +54,13 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     private final Map<Class<? extends NetworkMessage>, List<RuntimeRegistration>>
             typedRegistrations = new HashMap<>();
     private final List<RuntimeRegistration> metadataRegistrations = new ArrayList<>();
+    private final Map<Class<? extends NetworkMessage>,
+                    ListenerDispatcher.DispatchLane<PublishOperation>>
+            publishLanes = new HashMap<>();
+    private final Map<String, ListenerDispatcher.DispatchLane<PreparedMessage>> decodeLanes =
+            new HashMap<>();
+    private final Set<CompletableFuture<Void>> activePublishes =
+            ConcurrentHashMap.newKeySet();
 
     private volatile MessagingRuntimeState state = MessagingRuntimeState.NEW;
     private CompletableFuture<Void> startFuture;
@@ -114,25 +126,30 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(correlationId, "correlationId");
-        if (state != MessagingRuntimeState.RUNNING) {
-            return failedFuture("messaging runtime is not running");
+        CompletableFuture<Void> operation = new CompletableFuture<>();
+        ListenerDispatcher.DispatchLane<PublishOperation> lane;
+        synchronized (lifecycleLock) {
+            if (state != MessagingRuntimeState.RUNNING) {
+                return failedFuture("messaging runtime is not running");
+            }
+            try {
+                lane = publishLanes.computeIfAbsent(
+                        message.getClass(), this::createPublishLane);
+            } catch (RuntimeException failure) {
+                return CompletableFuture.failedFuture(failure);
+            }
+            activePublishes.add(operation);
         }
-
-        byte[] encoded;
-        try {
-            encoded =
-                    codec.encode(
-                            identity.instanceId(), target, message, correlationId);
-        } catch (RuntimeException failure) {
-            return CompletableFuture.failedFuture(failure);
+        operation.whenComplete((ignored, failure) -> activePublishes.remove(operation));
+        PublishOperation publication =
+                new PublishOperation(target, message, correlationId, operation);
+        if (!lane.dispatch(publication)) {
+            operation.completeExceptionally(
+                    new IllegalStateException(
+                            "message codec queue is full or closed for "
+                                    + message.getClass().getName()));
         }
-        try {
-            return Objects.requireNonNull(
-                    transport.publish(config.messageChannel(), encoded),
-                    "transport.publish()");
-        } catch (RuntimeException failure) {
-            return CompletableFuture.failedFuture(failure);
-        }
+        return operation;
     }
 
     @Override
@@ -167,6 +184,27 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     }
 
     @Override
+    public <M extends NetworkMessage> Subscription registerMessageType(
+            MessageType<M> type, MessagePayloadCodec<M> payloadCodec) {
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(payloadCodec, "payloadCodec");
+        synchronized (lifecycleLock) {
+            if (state != MessagingRuntimeState.RUNNING) {
+                throw new IllegalStateException("messaging runtime is not running");
+            }
+            return codec.register(type, payloadCodec);
+        }
+    }
+
+    @Override
+    public boolean isMessageTypeRegistered(MessageType<?> type) {
+        Objects.requireNonNull(type, "type");
+        synchronized (lifecycleLock) {
+            return state == MessagingRuntimeState.RUNNING && codec.isRegistered(type);
+        }
+    }
+
+    @Override
     public MessagingRuntimeState state() {
         return state;
     }
@@ -177,6 +215,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         CompletableFuture<Void> activeStart;
         Subscription receiveSubscription;
         List<RuntimeRegistration> registrations;
+        List<CompletableFuture<Void>> publications;
         synchronized (lifecycleLock) {
             if (state == MessagingRuntimeState.STOPPED) {
                 return closeFuture;
@@ -194,6 +233,11 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             registrations = allRegistrations();
             typedRegistrations.clear();
             metadataRegistrations.clear();
+            publishLanes.clear();
+            decodeLanes.clear();
+            codec.closeCustomRegistrations();
+            publications = List.copyOf(activePublishes);
+            activePublishes.clear();
         }
 
         Throwable cleanupFailure = null;
@@ -208,6 +252,11 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             activeStart.completeExceptionally(
                     new IllegalStateException("messaging runtime stopped during start"));
         }
+        publications.forEach(
+                publication ->
+                        publication.completeExceptionally(
+                                new IllegalStateException(
+                                        "messaging runtime stopped during publish")));
         for (RuntimeRegistration registration : registrations) {
             try {
                 registration.close();
@@ -288,13 +337,37 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             return;
         }
 
-        DecodedMessage decoded;
+        PreparedMessage prepared;
         try {
-            decoded = codec.decode(payload);
+            prepared = codec.prepare(payload);
         } catch (RuntimeException failure) {
             LOGGER.log(
                     System.Logger.Level.WARNING,
                     "Discarding invalid CraftRelay envelope: {0}",
+                    failure.getMessage());
+            return;
+        }
+        ListenerDispatcher.DispatchLane<PreparedMessage> lane;
+        synchronized (lifecycleLock) {
+            if (state != MessagingRuntimeState.RUNNING) {
+                return;
+            }
+            lane = decodeLanes.computeIfAbsent(
+                    prepared.dispatchKey(), this::createDecodeLane);
+        }
+        if (!lane.dispatch(prepared)) {
+            logOverflow("codec " + prepared.dispatchKey());
+        }
+    }
+
+    private void decodeAndDeliver(PreparedMessage prepared) {
+        DecodedMessage decoded;
+        try {
+            decoded = codec.decode(prepared);
+        } catch (RuntimeException failure) {
+            LOGGER.log(
+                    System.Logger.Level.WARNING,
+                    "Discarding invalid CraftRelay payload: {0}",
                     failure.getMessage());
             return;
         }
@@ -315,6 +388,68 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         }
         metadata.forEach(registration -> registration.dispatch(decoded));
         typed.forEach(registration -> registration.dispatch(decoded));
+    }
+
+    private ListenerDispatcher.DispatchLane<PublishOperation> createPublishLane(
+            Class<? extends NetworkMessage> messageType) {
+        return listenerDispatcher.register(
+                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                this::encodeAndPublish,
+                failure -> logListenerFailure("codec " + messageType.getName(), failure),
+                () -> logOverflow("codec " + messageType.getName()));
+    }
+
+    private ListenerDispatcher.DispatchLane<PreparedMessage> createDecodeLane(
+            String dispatchKey) {
+        return listenerDispatcher.register(
+                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                this::decodeAndDeliver,
+                failure -> logListenerFailure("codec " + dispatchKey, failure),
+                () -> logOverflow("codec " + dispatchKey));
+    }
+
+    private void encodeAndPublish(PublishOperation publication) {
+        if (state != MessagingRuntimeState.RUNNING) {
+            publication.result().completeExceptionally(
+                    new IllegalStateException("messaging runtime is not running"));
+            return;
+        }
+        byte[] encoded;
+        try {
+            encoded =
+                    codec.encode(
+                            identity.instanceId(),
+                            publication.target(),
+                            publication.message(),
+                            publication.correlationId());
+        } catch (RuntimeException failure) {
+            publication.result().completeExceptionally(failure);
+            return;
+        }
+        if (state != MessagingRuntimeState.RUNNING) {
+            publication.result().completeExceptionally(
+                    new IllegalStateException("messaging runtime stopped during encoding"));
+            return;
+        }
+        CompletableFuture<Void> publish;
+        try {
+            publish =
+                    Objects.requireNonNull(
+                            transport.publish(config.messageChannel(), encoded),
+                            "transport.publish()");
+        } catch (RuntimeException failure) {
+            publication.result().completeExceptionally(failure);
+            return;
+        }
+        publish.whenComplete(
+                (ignored, failure) -> {
+                    if (failure == null) {
+                        publication.result().complete(null);
+                    } else {
+                        publication.result().completeExceptionally(
+                                AsyncFailures.unwrap(failure));
+                    }
+                });
     }
 
     private <M extends NetworkMessage> RuntimeRegistration createTypedRegistration(
@@ -396,6 +531,20 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
 
         private void close() {
             dispatchLane.close();
+        }
+    }
+
+    private record PublishOperation(
+            NetworkTarget target,
+            NetworkMessage message,
+            Optional<UUID> correlationId,
+            CompletableFuture<Void> result) {
+
+        private PublishOperation {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(message, "message");
+            Objects.requireNonNull(correlationId, "correlationId");
+            Objects.requireNonNull(result, "result");
         }
     }
 }

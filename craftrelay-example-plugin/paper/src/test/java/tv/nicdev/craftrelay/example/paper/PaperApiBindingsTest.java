@@ -115,6 +115,11 @@ class PaperApiBindingsTest {
     private record StubApi(CraftRelayState state) implements CraftRelayApi {
 
         @Override
+        public tv.nicdev.craftrelay.api.messaging.CustomMessaging customMessaging() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public CompletableFuture<Void> publish(NetworkTarget target, NetworkMessage message) {
             return CompletableFuture.completedFuture(null);
         }

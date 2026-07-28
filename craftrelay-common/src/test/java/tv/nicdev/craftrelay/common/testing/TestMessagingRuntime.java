@@ -19,12 +19,16 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
@@ -37,6 +41,7 @@ public final class TestMessagingRuntime implements MessagingRuntime {
 
     private final List<Consumer<? super DecodedMessage>> metadataListeners =
             new CopyOnWriteArrayList<>();
+    private final Set<MessageType<?>> messageTypes = ConcurrentHashMap.newKeySet();
 
     private volatile MessagingRuntimeState state = MessagingRuntimeState.RUNNING;
     private volatile PublishHook publishHook = published -> {};
@@ -125,6 +130,22 @@ public final class TestMessagingRuntime implements MessagingRuntime {
     }
 
     @Override
+    public <M extends NetworkMessage> Subscription registerMessageType(
+            MessageType<M> type, MessagePayloadCodec<M> payloadCodec) {
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(payloadCodec, "payloadCodec");
+        if (!messageTypes.add(type)) {
+            throw new IllegalArgumentException("message type is already registered");
+        }
+        return Subscription.create(() -> messageTypes.remove(type));
+    }
+
+    @Override
+    public boolean isMessageTypeRegistered(MessageType<?> type) {
+        return messageTypes.contains(Objects.requireNonNull(type, "type"));
+    }
+
+    @Override
     public MessagingRuntimeState state() {
         return state;
     }
@@ -133,6 +154,7 @@ public final class TestMessagingRuntime implements MessagingRuntime {
     public CompletableFuture<Void> close() {
         state = MessagingRuntimeState.STOPPED;
         metadataListeners.clear();
+        messageTypes.clear();
         return CompletableFuture.completedFuture(null);
     }
 

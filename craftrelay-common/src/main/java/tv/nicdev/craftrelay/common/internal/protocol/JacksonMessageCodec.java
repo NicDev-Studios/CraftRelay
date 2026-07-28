@@ -29,8 +29,11 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 import tv.nicdev.craftrelay.api.NetworkMessage;
+import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.exception.InvalidMessageException;
 import tv.nicdev.craftrelay.api.exception.ProtocolException;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 
 final class JacksonMessageCodec implements MessageCodec {
@@ -52,6 +55,7 @@ final class JacksonMessageCodec implements MessageCodec {
                     "messageId",
                     "protocolVersion",
                     "type",
+                    "payloadVersion",
                     "sourceInstance",
                     "target",
                     "createdAt",
@@ -84,6 +88,7 @@ final class JacksonMessageCodec implements MessageCodec {
                 Objects.requireNonNull(mapper, "mapper")
                         .rebuild()
                         .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                        .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                         .build();
         if (maximumMessageSize <= 0) {
             throw new IllegalArgumentException("maximumMessageSize must be positive");
@@ -104,14 +109,16 @@ final class JacksonMessageCodec implements MessageCodec {
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(correlationId, "correlationId");
 
-        String type = registry.typeOf(message);
+        MessageRegistry.Binding<? extends NetworkMessage> binding =
+                registry.bindingFor(message);
         try {
-            JsonNode payload = mapper.valueToTree(message);
+            JsonNode payload = encodePayload(binding, message);
             MessageEnvelope envelope =
                     new MessageEnvelope(
                             Objects.requireNonNull(messageIdSupplier.get(), "messageId"),
                             PROTOCOL_VERSION,
-                            type,
+                            binding.key().type(),
+                            binding.key().payloadVersion(),
                             sourceInstance,
                             target,
                             Instant.now(clock),
@@ -122,13 +129,15 @@ final class JacksonMessageCodec implements MessageCodec {
             return encoded;
         } catch (InvalidMessageException exception) {
             throw exception;
-        } catch (JacksonException | IllegalArgumentException exception) {
+        } catch (ProtocolException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
             throw new InvalidMessageException("message could not be encoded", exception);
         }
     }
 
     @Override
-    public DecodedMessage decode(byte[] encoded) {
+    public PreparedMessage prepare(byte[] encoded) {
         Objects.requireNonNull(encoded, "encoded");
         if (encoded.length == 0) {
             throw new ProtocolException("encoded message must not be empty");
@@ -138,15 +147,9 @@ final class JacksonMessageCodec implements MessageCodec {
         try {
             JsonNode root = mapper.readTree(encoded);
             MessageEnvelope envelope = readEnvelope(root);
-            Class<? extends NetworkMessage> messageClass = registry.classFor(envelope.type());
-            NetworkMessage message = mapper.treeToValue(envelope.payload(), messageClass);
-            return new DecodedMessage(
-                    envelope.messageId(),
-                    envelope.sourceInstance(),
-                    envelope.target(),
-                    envelope.createdAt(),
-                    envelope.correlationId(),
-                    message);
+            MessageRegistry.Binding<? extends NetworkMessage> binding =
+                    registry.bindingFor(envelope.type(), envelope.payloadVersion());
+            return new PreparedMessage(envelope, binding);
         } catch (InvalidMessageException exception) {
             throw exception;
         } catch (JacksonException | IllegalArgumentException | NullPointerException exception) {
@@ -154,11 +157,48 @@ final class JacksonMessageCodec implements MessageCodec {
         }
     }
 
+    @Override
+    public DecodedMessage decode(PreparedMessage prepared) {
+        Objects.requireNonNull(prepared, "prepared");
+        MessageEnvelope envelope = prepared.envelope();
+        try {
+            NetworkMessage message = decodePayload(prepared.binding(), envelope.payload());
+            return new DecodedMessage(
+                    envelope.messageId(),
+                    envelope.sourceInstance(),
+                    envelope.target(),
+                    envelope.createdAt(),
+                    envelope.correlationId(),
+                    message);
+        } catch (ProtocolException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw new ProtocolException("message payload is malformed", exception);
+        }
+    }
+
+    @Override
+    public <M extends NetworkMessage> Subscription register(
+            MessageType<M> type, MessagePayloadCodec<M> payloadCodec) {
+        return registry.registerCustom(type, payloadCodec);
+    }
+
+    @Override
+    public boolean isRegistered(MessageType<?> type) {
+        return registry.isRegistered(type);
+    }
+
+    @Override
+    public void closeCustomRegistrations() {
+        registry.closeCustomRegistrations();
+    }
+
     private ObjectNode toJson(MessageEnvelope envelope) {
         ObjectNode root = mapper.createObjectNode();
         root.put("messageId", envelope.messageId().toString());
         root.put("protocolVersion", envelope.protocolVersion());
         root.put("type", envelope.type());
+        root.put("payloadVersion", envelope.payloadVersion());
         root.put("sourceInstance", envelope.sourceInstance());
         root.set("target", writeTarget(envelope.target()));
         root.put("createdAt", envelope.createdAt().toString());
@@ -185,6 +225,11 @@ final class JacksonMessageCodec implements MessageCodec {
             throw new ProtocolException("unsupported protocol version: " + protocolVersion);
         }
 
+        JsonNode payloadVersionNode = root.get("payloadVersion");
+        int payloadVersion =
+                payloadVersionNode == null
+                        ? 1
+                        : requiredPositiveInteger(root, "payloadVersion");
         JsonNode correlationNode = root.get("correlationId");
         Optional<UUID> correlationId =
                 correlationNode == null || correlationNode.isNull()
@@ -199,6 +244,7 @@ final class JacksonMessageCodec implements MessageCodec {
                 parseUuid(requiredString(root, "messageId"), "messageId"),
                 protocolVersion,
                 requiredString(root, "type"),
+                payloadVersion,
                 requiredString(root, "sourceInstance"),
                 readTarget(root.get("target")),
                 parseInstant(requiredString(root, "createdAt"), "createdAt"),
@@ -266,6 +312,70 @@ final class JacksonMessageCodec implements MessageCodec {
             throw new ProtocolException(field + " must be an integer");
         }
         return value.intValue();
+    }
+
+    private int requiredPositiveInteger(JsonNode node, String field) {
+        int value = requiredInteger(node, field);
+        if (value <= 0) {
+            throw new ProtocolException(field + " must be positive");
+        }
+        return value;
+    }
+
+    private JsonNode encodePayload(
+            MessageRegistry.Binding<? extends NetworkMessage> binding,
+            NetworkMessage message)
+            throws JacksonException {
+        if (!binding.custom()) {
+            return mapper.valueToTree(message);
+        }
+        return encodeCustomPayload(binding, message);
+    }
+
+    private <M extends NetworkMessage> JsonNode encodeCustomPayload(
+            MessageRegistry.Binding<M> binding, NetworkMessage message)
+            throws JacksonException {
+        byte[] encoded =
+                Objects.requireNonNull(
+                        binding.customCodec().encode(binding.messageClass().cast(message)),
+                        "custom codec result");
+        if (encoded.length == 0) {
+            throw new IllegalArgumentException("custom payload must not be empty");
+        }
+        requireAllowedSize(encoded);
+        JsonNode payload = mapper.readTree(encoded.clone());
+        if (payload == null || !payload.isObject()) {
+            throw new IllegalArgumentException("custom payload must be one JSON object");
+        }
+        return payload;
+    }
+
+    private NetworkMessage decodePayload(
+            MessageRegistry.Binding<? extends NetworkMessage> binding,
+            JsonNode payload)
+            throws JacksonException {
+        if (!binding.custom()) {
+            return mapper.treeToValue(payload, binding.messageClass());
+        }
+        return decodeCustomPayload(binding, payload);
+    }
+
+    private <M extends NetworkMessage> M decodeCustomPayload(
+            MessageRegistry.Binding<M> binding, JsonNode payload)
+            throws JacksonException {
+        byte[] encoded = mapper.writeValueAsBytes(payload);
+        M message =
+                Objects.requireNonNull(
+                        binding.customCodec().decode(encoded.clone()),
+                        "custom codec result");
+        if (message.getClass() != binding.messageClass()) {
+            throw new ProtocolException(
+                    "custom codec returned "
+                            + message.getClass().getName()
+                            + " instead of "
+                            + binding.messageClass().getName());
+        }
+        return message;
     }
 
     private UUID parseUuid(String value, String field) {

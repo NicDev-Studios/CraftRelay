@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -41,6 +42,8 @@ import tv.nicdev.craftrelay.api.message.PlayerLocationResponse;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
@@ -178,6 +181,74 @@ class CraftRelayNodeTest {
                 ApiUnavailableException.class, node.api().instances());
     }
 
+    @Test
+    void exposesLifecycleSafeCustomMessagingAndCorrelatedHandlers() throws Exception {
+        CraftRelayNode node =
+                node(new TestNetworkTransport(), new TestNetworkPresenceStore());
+        CraftRelayApi api = node.api();
+        MessageType<CustomRequest> requestType =
+                MessageType.of("example", "echo_request", 1, CustomRequest.class);
+        MessageType<CustomResponse> responseType =
+                MessageType.of("example", "echo_response", 1, CustomResponse.class);
+
+        assertThrows(
+                ApiUnavailableException.class,
+                () -> api.customMessaging().register(requestType, requestCodec()));
+        node.start().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+
+        var requestRegistration =
+                api.customMessaging().register(requestType, requestCodec());
+        var responseRegistration =
+                api.customMessaging().register(responseType, responseCodec());
+        CompletableFuture<Boolean> handlerThread = new CompletableFuture<>();
+        var handlerRegistration =
+                api.customMessaging()
+                        .handle(
+                                requestType,
+                                responseType,
+                                (request, context) -> {
+                                    handlerThread.complete(
+                                            Thread.currentThread().isVirtual()
+                                                    && context.sourceInstance().equals("node-a"));
+                                    return CompletableFuture.completedFuture(
+                                            new CustomResponse(request.value()));
+                                });
+
+        CustomResponse response =
+                api.request(
+                                NetworkTargets.instance("node-a"),
+                                new CustomRequest("hello"),
+                                CustomResponse.class,
+                                TIMEOUT)
+                        .get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+
+        assertEquals(new CustomResponse("hello"), response);
+        assertTrue(handlerThread.get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        api.customMessaging()
+                                .handle(
+                                        requestType,
+                                        responseType,
+                                        (request, context) ->
+                                                CompletableFuture.completedFuture(
+                                                        new CustomResponse("duplicate"))));
+
+        handlerRegistration.close();
+        requestRegistration.close();
+        assertFutureFailure(
+                tv.nicdev.craftrelay.api.exception.InvalidMessageException.class,
+                api.publish(
+                        NetworkTargets.allInstances(),
+                        new CustomRequest("unregistered")));
+        responseRegistration.close();
+        node.close().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        assertThrows(
+                ApiUnavailableException.class,
+                () -> api.customMessaging().register(requestType, requestCodec()));
+    }
+
     private static CraftRelayNode node(
             TestNetworkTransport transport,
             TestNetworkPresenceStore presenceStore) {
@@ -213,6 +284,43 @@ class CraftRelayNodeTest {
                 UUID.randomUUID(),
                 now,
                 now);
+    }
+
+    private static MessagePayloadCodec<CustomRequest> requestCodec() {
+        return textCodec(CustomRequest::value, CustomRequest::new);
+    }
+
+    private static MessagePayloadCodec<CustomResponse> responseCodec() {
+        return textCodec(CustomResponse::value, CustomResponse::new);
+    }
+
+    private static <M extends tv.nicdev.craftrelay.api.NetworkMessage>
+            MessagePayloadCodec<M> textCodec(
+                    java.util.function.Function<M, String> encoder,
+                    java.util.function.Function<String, M> decoder) {
+        return new MessagePayloadCodec<>() {
+            @Override
+            public byte[] encode(M message) {
+                return ("{\"value\":\"" + encoder.apply(message) + "\"}")
+                        .getBytes(StandardCharsets.UTF_8);
+            }
+
+            @Override
+            public M decode(byte[] payload) {
+                String json = new String(payload, StandardCharsets.UTF_8);
+                int start = json.indexOf(':') + 2;
+                int end = json.lastIndexOf('"');
+                return decoder.apply(json.substring(start, end));
+            }
+        };
+    }
+
+    private record CustomRequest(String value)
+            implements tv.nicdev.craftrelay.api.NetworkMessage {
+    }
+
+    private record CustomResponse(String value)
+            implements tv.nicdev.craftrelay.api.NetworkMessage {
     }
 
     private static void assertFutureFailure(

@@ -29,6 +29,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
+import tv.nicdev.craftrelay.api.messaging.CustomMessaging;
 
 class CraftRelayApiContractTest {
 
@@ -38,6 +39,7 @@ class CraftRelayApiContractTest {
                 Arrays.stream(CraftRelayApi.class.getDeclaredMethods())
                         .filter(method -> !method.getName().equals("subscribe"))
                         .filter(method -> !method.getName().equals("state"))
+                        .filter(method -> !method.getName().equals("customMessaging"))
                         .toArray(Method[]::new);
 
         assertEquals(4, asynchronousMethods.length);
@@ -62,12 +64,14 @@ class CraftRelayApiContractTest {
                         Duration.class);
         Method instances = CraftRelayApi.class.getMethod("instances");
         Method player = CraftRelayApi.class.getMethod("player", UUID.class);
+        Method customMessaging = CraftRelayApi.class.getMethod("customMessaging");
 
         assertEquals(CompletableFuture.class, publish.getReturnType());
         assertEquals(Subscription.class, subscribe.getReturnType());
         assertEquals(CompletableFuture.class, request.getReturnType());
         assertFuturePayload(instances, Collection.class);
         assertFuturePayload(player, Optional.class);
+        assertEquals(CustomMessaging.class, customMessaging.getReturnType());
     }
 
     private static void assertFuturePayload(Method method, Class<?> expectedPayload) {

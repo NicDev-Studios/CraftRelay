@@ -21,6 +21,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 
@@ -81,6 +83,13 @@ public interface MessagingRuntime {
      * @return idempotent registration
      */
     Subscription subscribeDecoded(Consumer<? super DecodedMessage> listener);
+
+    /** Registers one explicit custom message type in the local wire codec. */
+    <M extends NetworkMessage> Subscription registerMessageType(
+            MessageType<M> type, MessagePayloadCodec<M> payloadCodec);
+
+    /** Returns whether the exact custom message type is currently registered. */
+    boolean isMessageTypeRegistered(MessageType<?> type);
 
     /**
      * Returns the current runtime state.

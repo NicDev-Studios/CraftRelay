@@ -35,9 +35,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage;
 import tv.nicdev.craftrelay.api.message.PlayerLocationRequest;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageCodec;
@@ -277,6 +280,89 @@ class DefaultMessagingRuntimeTest {
     }
 
     @Test
+    void slowCustomEncoderDoesNotBlockAnotherMessageType() throws Exception {
+        TestNetworkTransport transport = new TestNetworkTransport();
+        MessagingRuntime runtime =
+                runtime(transport, NetworkInstanceType.SERVER, Optional.empty());
+        CountDownLatch slowStarted = new CountDownLatch(1);
+        CountDownLatch releaseSlow = new CountDownLatch(1);
+        AtomicReference<Thread> codecThread = new AtomicReference<>();
+        runtime.start().join();
+        runtime.registerMessageType(
+                MessageType.of("example", "slow", 1, SlowMessage.class),
+                blockingEncodeCodec(slowStarted, releaseSlow, codecThread));
+        runtime.registerMessageType(
+                MessageType.of("example", "fast", 1, FastMessage.class),
+                fastCodec());
+
+        CompletableFuture<Void> slow =
+                runtime.publish(NetworkTargets.allInstances(), new SlowMessage());
+        try {
+            assertTrue(await(slowStarted));
+            runtime.publish(NetworkTargets.allInstances(), new FastMessage())
+                    .orTimeout(2, TimeUnit.SECONDS)
+                    .join();
+            assertTrue(codecThread.get().isVirtual());
+        } finally {
+            releaseSlow.countDown();
+            slow.orTimeout(2, TimeUnit.SECONDS).join();
+            runtime.close().join();
+        }
+    }
+
+    @Test
+    void slowCustomDecoderDoesNotBlockAnotherMessageType() throws Exception {
+        TestNetworkTransport transport = new TestNetworkTransport();
+        MessagingRuntime runtime =
+                runtime(transport, NetworkInstanceType.SERVER, Optional.empty());
+        CountDownLatch slowStarted = new CountDownLatch(1);
+        CountDownLatch releaseSlow = new CountDownLatch(1);
+        CountDownLatch fastDelivered = new CountDownLatch(1);
+        AtomicReference<Thread> codecThread = new AtomicReference<>();
+        runtime.start().join();
+        runtime.registerMessageType(
+                MessageType.of("example", "slow", 1, SlowMessage.class),
+                blockingDecodeCodec(slowStarted, releaseSlow, codecThread));
+        runtime.registerMessageType(
+                MessageType.of("example", "fast", 1, FastMessage.class),
+                fastCodec());
+        runtime.subscribe(FastMessage.class, ignored -> fastDelivered.countDown());
+
+        runtime.publish(NetworkTargets.allInstances(), new SlowMessage()).join();
+        try {
+            assertTrue(await(slowStarted));
+            runtime.publish(NetworkTargets.allInstances(), new FastMessage()).join();
+            assertTrue(await(fastDelivered));
+            assertTrue(codecThread.get().isVirtual());
+        } finally {
+            releaseSlow.countDown();
+            runtime.close().join();
+        }
+    }
+
+    @Test
+    void shutdownFailsPublishBlockedInCustomCodec() {
+        TestNetworkTransport transport = new TestNetworkTransport();
+        MessagingRuntime runtime =
+                runtime(transport, NetworkInstanceType.SERVER, Optional.empty());
+        CountDownLatch slowStarted = new CountDownLatch(1);
+        CountDownLatch releaseSlow = new CountDownLatch(1);
+        AtomicReference<Thread> codecThread = new AtomicReference<>();
+        runtime.start().join();
+        runtime.registerMessageType(
+                MessageType.of("example", "slow", 1, SlowMessage.class),
+                blockingEncodeCodec(slowStarted, releaseSlow, codecThread));
+
+        CompletableFuture<Void> publish =
+                runtime.publish(NetworkTargets.allInstances(), new SlowMessage());
+        assertTrue(await(slowStarted));
+        runtime.close().join();
+
+        assertThrows(CompletionException.class, publish::join);
+        releaseSlow.countDown();
+    }
+
+    @Test
     void metadataAwareDeliveryPreservesEnvelopeFields() {
         TestNetworkTransport transport = new TestNetworkTransport();
         DefaultMessagingRuntime runtime = new DefaultMessagingRuntime(
@@ -436,6 +522,79 @@ class DefaultMessagingRuntimeTest {
             Thread.currentThread().interrupt();
             return false;
         }
+    }
+
+    private static MessagePayloadCodec<SlowMessage> blockingEncodeCodec(
+            CountDownLatch started,
+            CountDownLatch release,
+            AtomicReference<Thread> thread) {
+        return new MessagePayloadCodec<>() {
+            @Override
+            public byte[] encode(SlowMessage message) {
+                awaitCodec(started, release, thread);
+                return json();
+            }
+
+            @Override
+            public SlowMessage decode(byte[] payload) {
+                return new SlowMessage();
+            }
+        };
+    }
+
+    private static MessagePayloadCodec<SlowMessage> blockingDecodeCodec(
+            CountDownLatch started,
+            CountDownLatch release,
+            AtomicReference<Thread> thread) {
+        return new MessagePayloadCodec<>() {
+            @Override
+            public byte[] encode(SlowMessage message) {
+                return json();
+            }
+
+            @Override
+            public SlowMessage decode(byte[] payload) {
+                awaitCodec(started, release, thread);
+                return new SlowMessage();
+            }
+        };
+    }
+
+    private static MessagePayloadCodec<FastMessage> fastCodec() {
+        return new MessagePayloadCodec<>() {
+            @Override
+            public byte[] encode(FastMessage message) {
+                return json();
+            }
+
+            @Override
+            public FastMessage decode(byte[] payload) {
+                return new FastMessage();
+            }
+        };
+    }
+
+    private static byte[] json() {
+        return "{\"value\":true}".getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static void awaitCodec(
+            CountDownLatch started,
+            CountDownLatch release,
+            AtomicReference<Thread> thread) {
+        thread.set(Thread.currentThread());
+        started.countDown();
+        try {
+            release.await(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interruption) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private record SlowMessage() implements NetworkMessage {
+    }
+
+    private record FastMessage() implements NetworkMessage {
     }
 
     private static void awaitUninterruptibly(CountDownLatch latch) {

@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import eu.rekawek.toxiproxy.Proxy;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
@@ -48,6 +49,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.toxiproxy.ToxiproxyContainer;
 import org.testcontainers.utility.DockerImageName;
 import tv.nicdev.craftrelay.api.Subscription;
+import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
 import tv.nicdev.craftrelay.api.exception.RequestTimeoutException;
 import tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage;
@@ -57,6 +59,8 @@ import tv.nicdev.craftrelay.api.message.PlayerLocationResponse;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNodes;
@@ -664,6 +668,64 @@ class RedisTransportIntegrationTest {
     }
 
     @Test
+    void customMessagesAndRequestsRoundTripBetweenRedisNodes() throws Exception {
+        CraftRelayNode proxy =
+                newNode("custom-proxy", NetworkInstanceType.PROXY, Optional.of("custom"));
+        CraftRelayNode server =
+                newNode("custom-server", NetworkInstanceType.SERVER, Optional.of("custom"));
+        CompletableFuture.allOf(proxy.start(), server.start())
+                .orTimeout(15, TimeUnit.SECONDS)
+                .join();
+        MessageType<CustomRequest> requestType =
+                MessageType.of("integration", "echo_request", 1, CustomRequest.class);
+        MessageType<CustomResponse> responseType =
+                MessageType.of("integration", "echo_response", 1, CustomResponse.class);
+        for (CraftRelayNode node : List.of(proxy, server)) {
+            node.api().customMessaging().register(requestType, requestCodec());
+            node.api().customMessaging().register(responseType, responseCodec());
+        }
+        server.api()
+                .customMessaging()
+                .handle(
+                        requestType,
+                        responseType,
+                        (request, context) ->
+                                CompletableFuture.completedFuture(
+                                        new CustomResponse(
+                                                request.value() + "@" + context.sourceInstance())));
+        CountDownLatch published = new CountDownLatch(1);
+        proxy.api().subscribe(CustomResponse.class, ignored -> published.countDown());
+
+        server.api()
+                .publish(
+                        NetworkTargets.instance("custom-proxy"),
+                        new CustomResponse("published"))
+                .orTimeout(5, TimeUnit.SECONDS)
+                .join();
+        assertTrue(published.await(5, TimeUnit.SECONDS));
+
+        List<CompletableFuture<CustomResponse>> requests =
+                java.util.stream.IntStream.range(0, 20)
+                        .mapToObj(
+                                index ->
+                                        proxy.api()
+                                                .request(
+                                                        NetworkTargets.instance("custom-server"),
+                                                        new CustomRequest("request-" + index),
+                                                        CustomResponse.class,
+                                                        Duration.ofSeconds(5)))
+                        .toList();
+        CompletableFuture.allOf(requests.toArray(CompletableFuture[]::new))
+                .orTimeout(10, TimeUnit.SECONDS)
+                .join();
+        for (int index = 0; index < requests.size(); index++) {
+            assertEquals(
+                    new CustomResponse("request-" + index + "@custom-proxy"),
+                    requests.get(index).join());
+        }
+    }
+
+    @Test
     void slowRuntimeListenerDoesNotBlockPublisherOrAnotherRuntime() throws Exception {
         MessagingRuntime sender = newRuntime(
                 "proxy-eu-1", NetworkInstanceType.PROXY, Optional.of("eu"));
@@ -1039,6 +1101,40 @@ class RedisTransportIntegrationTest {
                 now,
                 now,
                 onlinePlayerCount);
+    }
+
+    private static MessagePayloadCodec<CustomRequest> requestCodec() {
+        return textCodec(CustomRequest::value, CustomRequest::new);
+    }
+
+    private static MessagePayloadCodec<CustomResponse> responseCodec() {
+        return textCodec(CustomResponse::value, CustomResponse::new);
+    }
+
+    private static <M extends NetworkMessage> MessagePayloadCodec<M> textCodec(
+            java.util.function.Function<M, String> encoder,
+            java.util.function.Function<String, M> decoder) {
+        return new MessagePayloadCodec<>() {
+            @Override
+            public byte[] encode(M message) {
+                return ("{\"value\":\"" + encoder.apply(message) + "\"}")
+                        .getBytes(StandardCharsets.UTF_8);
+            }
+
+            @Override
+            public M decode(byte[] payload) {
+                String json = new String(payload, StandardCharsets.UTF_8);
+                int start = json.indexOf(':') + 2;
+                int end = json.lastIndexOf('"');
+                return decoder.apply(json.substring(start, end));
+            }
+        };
+    }
+
+    private record CustomRequest(String value) implements NetworkMessage {
+    }
+
+    private record CustomResponse(String value) implements NetworkMessage {
     }
 
     private static void publishEventually(

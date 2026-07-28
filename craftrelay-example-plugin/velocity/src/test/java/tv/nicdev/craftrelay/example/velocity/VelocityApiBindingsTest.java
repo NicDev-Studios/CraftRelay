@@ -120,6 +120,11 @@ class VelocityApiBindingsTest {
         private final AtomicInteger closedSubscriptions = new AtomicInteger();
 
         @Override
+        public tv.nicdev.craftrelay.api.messaging.CustomMessaging customMessaging() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public CompletableFuture<Void> publish(NetworkTarget target, NetworkMessage message) {
             return CompletableFuture.completedFuture(null);
         }

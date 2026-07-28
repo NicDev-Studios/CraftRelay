@@ -33,6 +33,11 @@ class CraftRelayReadyEventTest {
     private static final class UnavailableApi implements CraftRelayApi {
 
         @Override
+        public tv.nicdev.craftrelay.api.messaging.CustomMessaging customMessaging() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public java.util.concurrent.CompletableFuture<Void> publish(
                 tv.nicdev.craftrelay.api.target.NetworkTarget target,
                 tv.nicdev.craftrelay.api.NetworkMessage message) {

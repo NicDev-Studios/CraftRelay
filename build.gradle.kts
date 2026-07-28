@@ -1,6 +1,7 @@
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
@@ -261,13 +262,16 @@ abstract class DockerSmokeTask : DefaultTask() {
     @get:Input
     abstract val velocityCount: Property<Int>
 
+    @get:Input
+    abstract val presenceKeyPrefix: Property<String>
+
     @TaskAction
     fun runSmokeTest() {
         try {
             compose("up", "--detach", "--wait")
             awaitInstanceLeases()
             compose("exec", "-T", "paper-1", "rcon-cli", "crelay instances")
-            awaitInstanceOutput()
+            awaitInstanceIndex()
             compose(
                 "exec",
                 "-T",
@@ -287,37 +291,65 @@ abstract class DockerSmokeTask : DefaultTask() {
     }
 
     private fun awaitInstanceLeases() {
+        val expected = paperCount.get() + velocityCount.get()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)
+        var observed: Int? = null
         do {
-            val count = composeCaptured(
+            observed = composeCaptured(
                 "exec",
                 "-T",
                 "redis",
                 "redis-cli",
                 "ZCARD",
-                "craftrelay:presence:instances",
-            ).lineSequence().lastOrNull()?.trim()
-            if (count == (paperCount.get() + velocityCount.get()).toString()) {
+                "${presenceKeyPrefix.get()}:presence:instances",
+            ).lineSequence()
+                .map(String::trim)
+                .mapNotNull(String::toIntOrNull)
+                .lastOrNull()
+            if (observed == expected) {
                 return
             }
             Thread.sleep(2_000)
         } while (System.nanoTime() < deadline)
-        throw GradleException("Expected all configured CraftRelay instance leases.")
+        throw GradleException(
+            "Expected $expected CraftRelay instance leases, but observed ${observed ?: "none"}.",
+        )
     }
 
-    private fun awaitInstanceOutput() {
+    private fun awaitInstanceIndex() {
         val expectedInstances =
             (1..paperCount.get()).map { "paper-$it" } +
                 (1..velocityCount.get()).map { "velocity-$it" }
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
         do {
-            val output = composeCaptured("logs", "--no-color", "paper-1")
-            if (expectedInstances.all(output::contains)) {
+            val output = composeCaptured(
+                "exec",
+                "-T",
+                "redis",
+                "redis-cli",
+                "ZRANGE",
+                "${presenceKeyPrefix.get()}:presence:instances",
+                "0",
+                "-1",
+            )
+            val observedInstances =
+                output.lineSequence()
+                    .map(String::trim)
+                    .mapNotNull { encoded ->
+                        runCatching {
+                            String(
+                                Base64.getUrlDecoder().decode(encoded),
+                                StandardCharsets.UTF_8,
+                            )
+                        }.getOrNull()
+                    }
+                    .toSet()
+            if (observedInstances.containsAll(expectedInstances)) {
                 return
             }
             Thread.sleep(2_000)
         } while (System.nanoTime() < deadline)
-        throw GradleException("RCON instance output was incomplete.")
+        throw GradleException("Redis instance index was incomplete.")
     }
 
     private fun compose(vararg arguments: String) {
@@ -464,6 +496,18 @@ val activeDockerEnvironmentFile =
     }
 val dockerGeneratedDirectory = layout.projectDirectory.dir("docker/.generated")
 val dockerComposeFile = dockerGeneratedDirectory.file("compose.yml")
+val dockerPresenceKeyPrefix =
+    providers.fileContents(
+        layout.projectDirectory.file(
+            "docker/templates/paper/server-config/plugins/CraftRelay/config.yml",
+        ),
+    ).asText.map { config ->
+        Regex("""(?m)^\s*prefix:\s*"([^"]+)"\s*$""")
+            .find(config)
+            ?.groupValues
+            ?.get(1)
+            ?: throw GradleException("Docker CraftRelay config has no messaging prefix.")
+    }
 val dockerEnvironment = providers.fileContents(activeDockerEnvironmentFile).asText.map { contents ->
     contents.lineSequence()
         .map(String::trim)
@@ -481,8 +525,8 @@ fun configuredDockerCount(name: String): Provider<Int> = dockerEnvironment.map {
     }
     value
 }
-val paperCount = configuredDockerCount("PAPER_COUNT")
-val velocityCount = configuredDockerCount("VELOCITY_COUNT")
+val dockerPaperCount = configuredDockerCount("PAPER_COUNT")
+val dockerVelocityCount = configuredDockerCount("VELOCITY_COUNT")
 val generateDockerTopology = tasks.register<GenerateDockerTopologyTask>("generateDockerTopology") {
     group = "development"
     description = "Generates the Docker topology configured by docker/.env."
@@ -553,6 +597,7 @@ tasks.register<DockerSmokeTask>("devSmoke") {
     environmentFile.set(dockerGeneratedDirectory.file(".env"))
     repositoryDirectory.set(layout.projectDirectory)
     composeProjectName.set("craftrelay-smoke")
-    paperCount.set(paperCount)
-    velocityCount.set(velocityCount)
+    paperCount.set(dockerPaperCount)
+    velocityCount.set(dockerVelocityCount)
+    presenceKeyPrefix.set(dockerPresenceKeyPrefix)
 }

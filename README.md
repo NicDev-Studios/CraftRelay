@@ -49,7 +49,9 @@ permission `craftrelay.example.admin`:
 The commands never wait on API futures. Platform output is scheduled back onto
 the Paper or Velocity scheduler. See the
 [Developer Guide](docs/developer-guide.md) for dependency setup, lifecycle
-access, and subscription cleanup.
+access, custom messages, request handlers, and subscription cleanup. Repository
+and release operations are documented separately in the
+[Maintainer Guide](docs/maintainer-guide.md).
 
 The local Docker topology and its reproducible smoke test are documented in
 [`docker/README.md`](docker/README.md).
@@ -66,19 +68,6 @@ Copy `docker/.env.example` to `docker/.env` to override the Paper/Velocity
 counts, Minecraft or Velocity version, memory, first proxy port, or `PAPER_OPS`.
 The topology defaults to two Paper servers, two Velocity proxies, and Minecraft
 `1.20.6`; configured operators are synchronized to every generated server.
-
-## Build authors
-
-Normal builds use the stable `NicDev-Studios` author fallback. A local metadata
-test can override it without changing tracked files:
-
-```shell
-./gradlew clean build -PcraftrelayAuthors=NicDevTV,ContributorTwo
-```
-
-Tag builds resolve up to 10 human GitHub contributor logins once and pass the
-same list to all four plugin artifacts. Normal push and pull-request builds do
-not access the GitHub contributor API.
 
 ## License
 

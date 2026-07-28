@@ -32,6 +32,7 @@ import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
+import tv.nicdev.craftrelay.api.messaging.CustomMessaging;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatcher;
@@ -49,6 +50,7 @@ final class DefaultCraftRelayApi implements CraftRelayApi {
     private final InstanceStateProvider instanceStateProvider;
     private final PlayerStateProvider playerStateProvider;
     private final FutureCompletionDispatcher completionDispatcher;
+    private final CustomMessaging customMessaging;
 
     DefaultCraftRelayApi(
             DefaultCraftRelayNode node,
@@ -56,7 +58,8 @@ final class DefaultCraftRelayApi implements CraftRelayApi {
             PendingRequestManager requestManager,
             InstanceStateProvider instanceStateProvider,
             PlayerStateProvider playerStateProvider,
-            FutureCompletionDispatcher completionDispatcher) {
+            FutureCompletionDispatcher completionDispatcher,
+            CustomMessaging customMessaging) {
         this.node = node;
         this.runtime = runtime;
         this.requestManager = requestManager;
@@ -65,6 +68,12 @@ final class DefaultCraftRelayApi implements CraftRelayApi {
         this.playerStateProvider =
                 Objects.requireNonNull(playerStateProvider, "playerStateProvider");
         this.completionDispatcher = completionDispatcher;
+        this.customMessaging = Objects.requireNonNull(customMessaging, "customMessaging");
+    }
+
+    @Override
+    public CustomMessaging customMessaging() {
+        return customMessaging;
     }
 
     @Override

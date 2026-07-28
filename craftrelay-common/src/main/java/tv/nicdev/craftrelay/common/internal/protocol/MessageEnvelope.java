@@ -26,6 +26,7 @@ record MessageEnvelope(
         UUID messageId,
         int protocolVersion,
         String type,
+        int payloadVersion,
         String sourceInstance,
         NetworkTarget target,
         Instant createdAt,
@@ -38,6 +39,9 @@ record MessageEnvelope(
             throw new IllegalArgumentException("protocolVersion must be positive");
         }
         type = requireText(type, "type");
+        if (payloadVersion <= 0) {
+            throw new IllegalArgumentException("payloadVersion must be positive");
+        }
         sourceInstance = requireText(sourceInstance, "sourceInstance");
         target = Objects.requireNonNull(target, "target");
         createdAt = Objects.requireNonNull(createdAt, "createdAt");

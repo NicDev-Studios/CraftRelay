@@ -127,6 +127,11 @@ class ExampleCommandServiceTest {
         private NetworkMessage message;
 
         @Override
+        public tv.nicdev.craftrelay.api.messaging.CustomMessaging customMessaging() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public CompletableFuture<Void> publish(
                 NetworkTarget publishedTarget, NetworkMessage publishedMessage) {
             target = publishedTarget;

@@ -32,6 +32,11 @@ import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticComponent;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryCounter;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryGauge;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.state.NetworkPlayerStore;
@@ -50,9 +55,6 @@ import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
  */
 public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(PlayerRegistry.class.getName());
-
     private final Object lifecycleLock = new Object();
     private final NetworkPlayerStore store;
     private final MessagingRuntime runtime;
@@ -61,6 +63,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
     private final NodeLease nodeLease;
     private final Consumer<? super PlayerSessionKey> ownershipLossHandler;
     private final Clock clock;
+    private final NodeDiagnostics diagnostics;
     private final ConcurrentHashMap<UUID, LocalPlayerLease> localPlayers =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, CompletableFuture<Void>> mutationLanes =
@@ -97,7 +100,28 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                 config,
                 nodeLease,
                 ownershipLossHandler,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                new NodeDiagnostics());
+    }
+
+    /** Creates a registry sharing node diagnostics. */
+    public PlayerRegistry(
+            NetworkPlayerStore store,
+            MessagingRuntime runtime,
+            LocalInstanceIdentity identity,
+            PlayerPresenceConfig config,
+            NodeLease nodeLease,
+            Consumer<? super PlayerSessionKey> ownershipLossHandler,
+            NodeDiagnostics diagnostics) {
+        this(
+                store,
+                runtime,
+                identity,
+                config,
+                nodeLease,
+                ownershipLossHandler,
+                Clock.systemUTC(),
+                diagnostics);
     }
 
     PlayerRegistry(
@@ -108,6 +132,26 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
             NodeLease nodeLease,
             Consumer<? super PlayerSessionKey> ownershipLossHandler,
             Clock clock) {
+        this(
+                store,
+                runtime,
+                identity,
+                config,
+                nodeLease,
+                ownershipLossHandler,
+                clock,
+                new NodeDiagnostics());
+    }
+
+    PlayerRegistry(
+            NetworkPlayerStore store,
+            MessagingRuntime runtime,
+            LocalInstanceIdentity identity,
+            PlayerPresenceConfig config,
+            NodeLease nodeLease,
+            Consumer<? super PlayerSessionKey> ownershipLossHandler,
+            Clock clock,
+            NodeDiagnostics diagnostics) {
         this.store = Objects.requireNonNull(store, "store");
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.identity = Objects.requireNonNull(identity, "identity");
@@ -116,6 +160,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         this.ownershipLossHandler =
                 Objects.requireNonNull(ownershipLossHandler, "ownershipLossHandler");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
     }
 
     /** Cleans safely fenced stale sessions and starts periodic refreshes on proxy nodes. */
@@ -140,6 +185,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                 synchronized (lifecycleLock) {
                     if (failure == null && state == RegistryState.STARTING) {
                         state = RegistryState.RUNNING;
+                        diagnostics.healthy(DiagnosticComponent.PLAYER_PRESENCE);
                         if (identity.instanceType() == NetworkInstanceType.PROXY) {
                             scheduleRefresh();
                         }
@@ -147,6 +193,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                     }
                     if (state == RegistryState.STARTING) {
                         state = RegistryState.NEW;
+                        diagnostics.unavailable(DiagnosticComponent.PLAYER_PRESENCE);
                     }
                 }
                 if (failure != null) {
@@ -206,7 +253,14 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
 
     @Override
     public CompletableFuture<Optional<NetworkPlayer>> player(UUID playerId) {
-        return store.player(Objects.requireNonNull(playerId, "playerId"));
+        return store.player(Objects.requireNonNull(playerId, "playerId"))
+                .whenComplete((ignored, failure) -> {
+                    if (failure == null) {
+                        diagnostics.healthy(DiagnosticComponent.PLAYER_PRESENCE);
+                    } else {
+                        diagnostics.degraded(DiagnosticComponent.PLAYER_PRESENCE);
+                    }
+                });
     }
 
     /**
@@ -249,6 +303,8 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                             mutationExecutor)
                     .whenComplete((ignored, failure) -> {
                         localPlayers.clear();
+                        updateLocalPlayerGauge();
+                        diagnostics.unavailable(DiagnosticComponent.PLAYER_PRESENCE);
                         mutationExecutor.shutdown();
                         refreshExecutor.shutdown();
                         synchronized (lifecycleLock) {
@@ -292,6 +348,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                     }
                     localPlayers.put(
                             playerId, new LocalPlayerLease(claimed, safeUntilNanos));
+                    updateLocalPlayerGauge();
                     scheduleLeaseGuardIfEarlier(guardDeadline(safeUntilNanos));
                     return publishBestEffort(new PlayerConnectedMessage(claimed))
                             .thenApply(ignored -> claimed);
@@ -441,8 +498,14 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         }
         operation.whenCompleteAsync((ignored, failure) -> {
             if (failure != null) {
-                logFailure("Could not refresh player presence; will retry", failure);
+                diagnostics.increment(TelemetryCounter.PLAYER_REFRESH_FAILURES);
+                diagnostics.degraded(DiagnosticComponent.PLAYER_PRESENCE);
+                diagnostics.report(
+                        DiagnosticCode.PLAYER_REFRESH_FAILED,
+                        AsyncFailures.unwrap(failure));
             } else {
+                diagnostics.increment(TelemetryCounter.PLAYER_REFRESH_SUCCESSES);
+                diagnostics.healthy(DiagnosticComponent.PLAYER_PRESENCE);
                 rescheduleLeaseGuard();
             }
             scheduleRefresh();
@@ -490,6 +553,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
             return;
         }
         if (localPlayers.remove(session.playerId(), current)) {
+            updateLocalPlayerGauge();
             try {
                 ownershipLossHandler.accept(session);
             } catch (Throwable failure) {
@@ -505,6 +569,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                         current.snapshot().sessionId().equals(sessionId)
                                 ? null
                                 : current);
+        updateLocalPlayerGauge();
     }
 
     private CompletableFuture<NetworkPlayer> releaseUnsafeClaim(NetworkPlayer claimed) {
@@ -598,6 +663,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         localPlayers.forEach((playerId, lease) -> {
             if (guardDeadline(lease.safeUntilNanos()) <= now
                     && localPlayers.remove(playerId, lease)) {
+                updateLocalPlayerGauge();
                 PlayerSessionKey session =
                         new PlayerSessionKey(playerId, lease.snapshot().sessionId());
                 try {
@@ -691,11 +757,14 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         return value;
     }
 
-    private static void logFailure(String message, Throwable failure) {
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                message,
+    private void logFailure(String message, Throwable failure) {
+        diagnostics.report(
+                DiagnosticCode.REDIS_OPERATION_FAILED,
                 AsyncFailures.unwrap(failure));
+    }
+
+    private void updateLocalPlayerGauge() {
+        diagnostics.setGauge(TelemetryGauge.LOCAL_PLAYERS, localPlayers.size());
     }
 
     private enum RegistryState {

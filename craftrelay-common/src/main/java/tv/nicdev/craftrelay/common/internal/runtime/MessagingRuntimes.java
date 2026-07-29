@@ -16,6 +16,7 @@
 package tv.nicdev.craftrelay.common.internal.runtime;
 
 import java.util.Objects;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageCodecs;
 import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 
@@ -37,10 +38,28 @@ public final class MessagingRuntimes {
             NetworkTransport transport,
             LocalInstanceIdentity identity,
             MessagingRuntimeConfig config) {
+        return create(transport, identity, config, new NodeDiagnostics());
+    }
+
+    /**
+     * Creates a runtime sharing one node diagnostics owner.
+     *
+     * @param transport owned transport
+     * @param identity local instance identity
+     * @param config runtime settings
+     * @param diagnostics node diagnostics
+     * @return a new, unstarted runtime
+     */
+    public static MessagingRuntime create(
+            NetworkTransport transport,
+            LocalInstanceIdentity identity,
+            MessagingRuntimeConfig config,
+            NodeDiagnostics diagnostics) {
         return new DefaultMessagingRuntime(
                 Objects.requireNonNull(transport, "transport"),
                 MessageCodecs.standard(),
                 Objects.requireNonNull(identity, "identity"),
-                Objects.requireNonNull(config, "config"));
+                Objects.requireNonNull(config, "config"),
+                Objects.requireNonNull(diagnostics, "diagnostics"));
     }
 }

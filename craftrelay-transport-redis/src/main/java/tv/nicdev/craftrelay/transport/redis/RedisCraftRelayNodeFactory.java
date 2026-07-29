@@ -20,6 +20,8 @@ import java.util.function.IntSupplier;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNodes;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticSink;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerOwnershipListener;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.transport.redis.config.CraftRelayRedisConfig;
@@ -44,8 +46,29 @@ public final class RedisCraftRelayNodeFactory {
             NetworkInstanceType instanceType,
             IntSupplier onlinePlayerCount,
             PlayerOwnershipListener ownershipListener) {
+        return create(
+                config,
+                instanceType,
+                onlinePlayerCount,
+                ownershipListener,
+                DiagnosticSink.NOOP);
+    }
+
+    /** Creates one fully owned node with a platform diagnostic sink. */
+    public static CraftRelayNode create(
+            CraftRelayRedisConfig config,
+            NetworkInstanceType instanceType,
+            IntSupplier onlinePlayerCount,
+            PlayerOwnershipListener ownershipListener,
+            DiagnosticSink diagnosticSink) {
         CraftRelayRedisConfig settings = Objects.requireNonNull(config, "config");
-        LettuceRedisBackend backend = new LettuceRedisBackend(settings.redis());
+        NodeDiagnostics diagnostics =
+                new NodeDiagnostics(Objects.requireNonNull(diagnosticSink, "diagnosticSink"));
+        LettuceRedisBackend backend =
+                new LettuceRedisBackend(
+                        settings.redis(),
+                        diagnostics,
+                        settings.messaging().capacities().dispatchQueueCapacity());
         try {
             LettuceRedisTransport transport = backend.transport();
             LettuceRedisPresenceStore store =
@@ -63,7 +86,8 @@ public final class RedisCraftRelayNodeFactory {
                     settings.playerPresence(),
                     store,
                     Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
-                    Objects.requireNonNull(ownershipListener, "ownershipListener"));
+                    Objects.requireNonNull(ownershipListener, "ownershipListener"),
+                    diagnostics);
         } catch (RuntimeException | Error failure) {
             backend.close();
             throw failure;

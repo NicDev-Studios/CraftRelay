@@ -22,14 +22,26 @@ import java.util.Objects;
  *
  * @param channelPrefix Redis-independent transport channel prefix
  * @param duplicateCacheCapacity maximum remembered message IDs
+ * @param capacities bounded messaging capacities
  */
-public record MessagingRuntimeConfig(String channelPrefix, int duplicateCacheCapacity) {
+public record MessagingRuntimeConfig(
+        String channelPrefix,
+        int duplicateCacheCapacity,
+        MessagingCapacityConfig capacities) {
 
     /** Default channel prefix. */
     public static final String DEFAULT_CHANNEL_PREFIX = "craftrelay";
 
     /** Default number of remembered message IDs. */
     public static final int DEFAULT_DUPLICATE_CACHE_CAPACITY = 10_000;
+
+    /** Largest supported duplicate cache. */
+    public static final int MAXIMUM_DUPLICATE_CACHE_CAPACITY = 1_000_000;
+
+    /** Creates settings with standard bounded messaging capacities. */
+    public MessagingRuntimeConfig(String channelPrefix, int duplicateCacheCapacity) {
+        this(channelPrefix, duplicateCacheCapacity, MessagingCapacityConfig.defaults());
+    }
 
     /** Creates validated runtime settings. */
     public MessagingRuntimeConfig {
@@ -40,9 +52,13 @@ public record MessagingRuntimeConfig(String channelPrefix, int duplicateCacheCap
         if (!channelPrefix.equals(channelPrefix.strip())) {
             throw new IllegalArgumentException("channelPrefix must not have surrounding whitespace");
         }
-        if (duplicateCacheCapacity <= 0) {
-            throw new IllegalArgumentException("duplicateCacheCapacity must be positive");
+        if (duplicateCacheCapacity <= 0
+                || duplicateCacheCapacity > MAXIMUM_DUPLICATE_CACHE_CAPACITY) {
+            throw new IllegalArgumentException(
+                    "duplicateCacheCapacity must be between 1 and "
+                            + MAXIMUM_DUPLICATE_CACHE_CAPACITY);
         }
+        capacities = Objects.requireNonNull(capacities, "capacities");
     }
 
     /**

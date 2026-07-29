@@ -28,6 +28,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import net.kyori.adventure.text.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
@@ -37,15 +39,13 @@ import tv.nicdev.craftrelay.common.internal.state.PlayerSessionKey;
 /** Bridges Velocity player lifecycle events to distributed player presence. */
 public final class VelocityPlayerPresenceListener {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(VelocityPlayerPresenceListener.class.getName());
-
     private final Object plugin;
     private final ProxyServer server;
     private final PlayerPresence presence;
     private final LocalPlayerSessions sessions;
     private final String unavailableMessage;
     private final String duplicateMessage;
+    private final Logger logger;
 
     /**
      * Creates a presence listener.
@@ -64,12 +64,42 @@ public final class VelocityPlayerPresenceListener {
             LocalPlayerSessions sessions,
             String unavailableMessage,
             String duplicateMessage) {
+        this(
+                plugin,
+                server,
+                presence,
+                sessions,
+                unavailableMessage,
+                duplicateMessage,
+                LoggerFactory.getLogger(VelocityPlayerPresenceListener.class));
+    }
+
+    /**
+     * Creates a presence listener using the platform logger.
+     *
+     * @param plugin owning Velocity plugin
+     * @param server active proxy
+     * @param presence distributed presence facade
+     * @param sessions shared local session index
+     * @param unavailableMessage fail-closed login message
+     * @param duplicateMessage duplicate-session login message
+     * @param logger platform logger
+     */
+    public VelocityPlayerPresenceListener(
+            Object plugin,
+            ProxyServer server,
+            PlayerPresence presence,
+            LocalPlayerSessions sessions,
+            String unavailableMessage,
+            String duplicateMessage,
+            Logger logger) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.server = Objects.requireNonNull(server, "server");
         this.presence = Objects.requireNonNull(presence, "presence");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
         this.unavailableMessage = requireText(unavailableMessage, "unavailableMessage");
         this.duplicateMessage = requireText(duplicateMessage, "duplicateMessage");
+        this.logger = Objects.requireNonNull(logger, "logger");
     }
 
     /**
@@ -192,12 +222,13 @@ public final class VelocityPlayerPresenceListener {
         return completion;
     }
 
-    private static void logMutationFailure(
+    private void logMutationFailure(
             String operation, UUID playerId, Throwable failure) {
         if (failure != null) {
-            LOGGER.log(
-                    System.Logger.Level.WARNING,
-                    "Player presence " + operation + " failed for " + playerId,
+            logger.warn(
+                    "Player presence {} failed for {}",
+                    operation,
+                    playerId,
                     AsyncFailures.unwrap(failure));
         }
     }
@@ -208,9 +239,9 @@ public final class VelocityPlayerPresenceListener {
                 ? duplicateMessage
                 : unavailableMessage;
         event.setResult(ComponentResult.denied(Component.text(message)));
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                "Player presence claim failed for " + player.getUniqueId(),
+        logger.warn(
+                "Player presence claim failed for {}",
+                player.getUniqueId(),
                 cause);
     }
 

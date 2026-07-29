@@ -30,6 +30,7 @@ import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.common.internal.CraftRelayStartupBanner;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticEvent;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerOwnershipListener;
 import tv.nicdev.craftrelay.platform.paper.internal.presence.PaperPlayerCounter;
 import tv.nicdev.craftrelay.platform.paper.internal.service.PaperApiService;
@@ -73,10 +74,13 @@ public final class PaperPluginLifecycle {
                     settings,
                     NetworkInstanceType.SERVER,
                     playerCounter,
-                    PlayerOwnershipListener.NOOP);
+                    PlayerOwnershipListener.NOOP,
+                    this::reportDiagnostic);
         } catch (Exception failure) {
-            plugin.getLogger().log(
-                    Level.SEVERE, "Could not load CraftRelay configuration", failure);
+            plugin.getLogger().severe(
+                    "Could not load CraftRelay configuration ("
+                            + failure.getClass().getName()
+                            + ')');
             plugin.getServer().getPluginManager().disablePlugin(plugin);
             return;
         }
@@ -106,8 +110,10 @@ public final class PaperPluginLifecycle {
             Thread.currentThread().interrupt();
             plugin.getLogger().log(Level.WARNING, "CraftRelay shutdown was interrupted", failure);
         } catch (ExecutionException failure) {
-            plugin.getLogger().log(
-                    Level.WARNING, "CraftRelay shutdown failed", AsyncFailures.unwrap(failure));
+            plugin.getLogger().warning(
+                    "CraftRelay shutdown failed ("
+                            + AsyncFailures.unwrap(failure).getClass().getName()
+                            + ')');
         } catch (TimeoutException failure) {
             plugin.getLogger().log(
                     Level.WARNING, "CraftRelay shutdown exceeded " + timeout, failure);
@@ -149,13 +155,24 @@ public final class PaperPluginLifecycle {
             return;
         }
         if (failure != null) {
-            plugin.getLogger().log(
-                    Level.SEVERE, "CraftRelay failed to start", AsyncFailures.unwrap(failure));
+            plugin.getLogger().severe(
+                    "CraftRelay failed to start ("
+                            + AsyncFailures.unwrap(failure).getClass().getName()
+                            + ')');
             plugin.getServer().getPluginManager().disablePlugin(plugin);
             return;
         }
 
         apiService.register(Objects.requireNonNull(current, "node").api());
         plugin.getLogger().info("CraftRelay is available as instance " + settings.instanceId());
+    }
+
+    private void reportDiagnostic(DiagnosticEvent event) {
+        Level level = switch (event.code().severity()) {
+            case INFO -> Level.INFO;
+            case WARNING -> Level.WARNING;
+            case ERROR -> Level.SEVERE;
+        };
+        plugin.getLogger().log(level, event.logMessage());
     }
 }

@@ -43,6 +43,10 @@ class YamlCraftRelayConfigLoaderTest {
         assertEquals(Duration.ofSeconds(3), config.redis().connectionTimeout());
         assertEquals("network", config.messaging().channelPrefix());
         assertEquals(20_000, config.messaging().duplicateCacheCapacity());
+        assertEquals(512, config.messaging().capacities().dispatchQueueCapacity());
+        assertEquals(1_024, config.messaging().capacities().maximumListeners());
+        assertEquals(256, config.messaging().capacities().maximumCustomRegistrations());
+        assertEquals(128, config.messaging().capacities().maximumCustomRequestHandlers());
         assertEquals(2_048, config.requests().maximumPendingRequests());
         assertEquals(Duration.ofSeconds(10), config.shutdownTimeout());
         assertFalse(config.redis().toString().contains("secret"));
@@ -57,6 +61,16 @@ class YamlCraftRelayConfigLoaderTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> load(validYaml("change-me")));
+    }
+
+    @Test
+    void requiresSupportedSchemaVersion() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> load(validYaml("proxy-1").replace("config-version: 1", "config-version: 2")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> load(validYaml("proxy-1").replace("config-version: 1\n", "")));
     }
 
     @Test
@@ -90,6 +104,7 @@ class YamlCraftRelayConfigLoaderTest {
 
     private static String validYaml(String instanceId) {
         return """
+                config-version: 1
                 instance:
                   id: "%s"
                   group: "eu"
@@ -104,6 +119,10 @@ class YamlCraftRelayConfigLoaderTest {
                 messaging:
                   prefix: "network"
                   duplicate-cache-capacity: 20000
+                  dispatch-queue-capacity: 512
+                  maximum-listeners: 1024
+                  maximum-custom-registrations: 256
+                  maximum-custom-request-handlers: 128
                 requests:
                   maximum-pending: 2048
                 presence:

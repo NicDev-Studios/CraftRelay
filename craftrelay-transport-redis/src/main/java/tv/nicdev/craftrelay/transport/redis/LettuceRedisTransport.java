@@ -36,6 +36,11 @@ import java.util.concurrent.CompletionException;
 import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.ListenerDispatcher;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticComponent;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryCounter;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingCapacityConfig;
 import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 import tv.nicdev.craftrelay.common.transport.TransportListener;
 import tv.nicdev.craftrelay.common.transport.TransportState;
@@ -49,13 +54,12 @@ import tv.nicdev.craftrelay.common.transport.TransportState;
  */
 public final class LettuceRedisTransport implements NetworkTransport {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(LettuceRedisTransport.class.getName());
-
     private final Object lifecycleLock = new Object();
     private final LettuceRedisBackend backend;
     private final boolean closesBackend;
     private final ListenerDispatcher listenerDispatcher;
+    private final NodeDiagnostics diagnostics;
+    private final int dispatchQueueCapacity;
     private final Map<String, List<ListenerRegistration>> listeners = new HashMap<>();
     private final Set<String> brokerSubscriptions = new HashSet<>();
 
@@ -67,6 +71,7 @@ public final class LettuceRedisTransport implements NetworkTransport {
     private StatefulRedisPubSubConnection<byte[], byte[]> subscriptionConnection;
     private boolean publisherConnected;
     private boolean subscriberConnected;
+    private boolean everConnected;
 
     /**
      * Creates a transport without opening network connections.
@@ -74,14 +79,32 @@ public final class LettuceRedisTransport implements NetworkTransport {
      * @param config validated Redis settings
      */
     public LettuceRedisTransport(RedisTransportConfig config) {
-        this(new LettuceRedisBackend(Objects.requireNonNull(config, "config")), true);
+        this(
+                new LettuceRedisBackend(Objects.requireNonNull(config, "config")),
+                true,
+                new NodeDiagnostics(),
+                MessagingCapacityConfig.defaults().dispatchQueueCapacity());
     }
 
     LettuceRedisTransport(LettuceRedisBackend backend, boolean closesBackend) {
+        this(
+                backend,
+                closesBackend,
+                new NodeDiagnostics(),
+                MessagingCapacityConfig.defaults().dispatchQueueCapacity());
+    }
+
+    LettuceRedisTransport(
+            LettuceRedisBackend backend,
+            boolean closesBackend,
+            NodeDiagnostics diagnostics,
+            int dispatchQueueCapacity) {
         this.backend = Objects.requireNonNull(backend, "backend");
         this.closesBackend = closesBackend;
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+        this.dispatchQueueCapacity = dispatchQueueCapacity;
         this.listenerDispatcher =
-                new ListenerDispatcher("craftrelay-redis-listener-");
+                new ListenerDispatcher("craftrelay-redis-listener-", diagnostics);
     }
 
     @Override
@@ -124,7 +147,13 @@ public final class LettuceRedisTransport implements NetworkTransport {
         return connection.async()
                 .publish(channelBytes(validatedChannel), payloadCopy)
                 .toCompletableFuture()
-                .thenApply(ignored -> null);
+                .thenApply(ignored -> (Void) null)
+                .whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        diagnostics.increment(TelemetryCounter.REDIS_OPERATION_FAILURES);
+                        diagnostics.report(DiagnosticCode.REDIS_OPERATION_FAILED, failure);
+                    }
+                });
     }
 
     @Override
@@ -191,6 +220,7 @@ public final class LettuceRedisTransport implements NetworkTransport {
                         synchronized (lifecycleLock) {
                             state = TransportState.CLOSED;
                         }
+                        diagnostics.unavailable(DiagnosticComponent.TRANSPORT);
                     });
             operation = closeFuture;
         }
@@ -269,8 +299,10 @@ public final class LettuceRedisTransport implements NetworkTransport {
             synchronized (lifecycleLock) {
                 if (state == TransportState.CONNECTING) {
                     state = TransportState.CONNECTED;
+                    everConnected = true;
                 }
             }
+            diagnostics.healthy(DiagnosticComponent.TRANSPORT);
         });
     }
 
@@ -291,11 +323,8 @@ public final class LettuceRedisTransport implements NetworkTransport {
                         synchronized (lifecycleLock) {
                             brokerSubscriptions.remove(channel);
                         }
-                        LOGGER.log(
-                                System.Logger.Level.WARNING,
-                                "Redis subscription failed for channel {0}: {1}",
-                                channel,
-                                failure.getMessage());
+                        diagnostics.increment(TelemetryCounter.REDIS_OPERATION_FAILURES);
+                        diagnostics.report(DiagnosticCode.REDIS_OPERATION_FAILED, failure);
                     }
                 });
     }
@@ -413,6 +442,7 @@ public final class LettuceRedisTransport implements NetworkTransport {
         public void onRedisConnected(
                 RedisChannelHandler<?, ?> connection, SocketAddress socketAddress) {
             CompletableFuture<Void> readiness = null;
+            boolean reconnected = false;
             synchronized (lifecycleLock) {
                 if (publisher) {
                     publisherConnected = true;
@@ -426,7 +456,14 @@ public final class LettuceRedisTransport implements NetworkTransport {
                     state = TransportState.CONNECTED;
                     readiness = reconnectFuture;
                     reconnectFuture = null;
+                    reconnected = everConnected;
+                    everConnected = true;
                 }
+            }
+            if (reconnected) {
+                diagnostics.increment(TelemetryCounter.REDIS_RECONNECTS);
+                diagnostics.healthy(DiagnosticComponent.TRANSPORT);
+                diagnostics.report(DiagnosticCode.REDIS_RECONNECTED, null);
             }
             if (readiness != null) {
                 readiness.completeAsync(() -> null);
@@ -435,6 +472,7 @@ public final class LettuceRedisTransport implements NetworkTransport {
 
         @Override
         public void onRedisDisconnected(RedisChannelHandler<?, ?> connection) {
+            boolean disconnected = false;
             synchronized (lifecycleLock) {
                 if (publisher) {
                     publisherConnected = false;
@@ -444,7 +482,13 @@ public final class LettuceRedisTransport implements NetworkTransport {
                 if (state == TransportState.CONNECTED) {
                     state = TransportState.CONNECTING;
                     reconnectFuture = new CompletableFuture<>();
+                    disconnected = true;
                 }
+            }
+            if (disconnected) {
+                diagnostics.increment(TelemetryCounter.REDIS_DISCONNECTS);
+                diagnostics.degraded(DiagnosticComponent.TRANSPORT);
+                diagnostics.report(DiagnosticCode.REDIS_DISCONNECTED, null);
             }
         }
     }
@@ -457,16 +501,10 @@ public final class LettuceRedisTransport implements NetworkTransport {
         private ListenerRegistration(TransportListener listener) {
             this.listener = listener;
             this.dispatchLane = listenerDispatcher.register(
-                    ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                    dispatchQueueCapacity,
                     this::deliver,
-                    failure -> LOGGER.log(
-                            System.Logger.Level.WARNING,
-                            "Transport listener failed: {0}",
-                            failure.getMessage()),
-                    () -> LOGGER.log(
-                            System.Logger.Level.WARNING,
-                            "Dropping Redis delivery for a slow listener; queue limit is {0}",
-                            ListenerDispatcher.DEFAULT_QUEUE_CAPACITY));
+                    failure -> diagnostics.report(DiagnosticCode.LISTENER_FAILED, failure),
+                    () -> {});
         }
 
         private void enqueue(String channel, byte[] payload) {

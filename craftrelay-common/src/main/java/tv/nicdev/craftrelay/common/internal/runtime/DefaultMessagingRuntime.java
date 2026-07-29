@@ -34,6 +34,11 @@ import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.ListenerDispatcher;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticComponent;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryCounter;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryGauge;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 import tv.nicdev.craftrelay.common.internal.protocol.CodecRegistration;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageBindingKey;
@@ -44,17 +49,14 @@ import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 
 final class DefaultMessagingRuntime implements MessagingRuntime {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(DefaultMessagingRuntime.class.getName());
-
     private final Object lifecycleLock = new Object();
     private final NetworkTransport transport;
     private final MessageCodec codec;
     private final LocalInstanceIdentity identity;
     private final MessagingRuntimeConfig config;
+    private final NodeDiagnostics diagnostics;
     private final DuplicateMessageCache duplicateCache;
-    private final ListenerDispatcher listenerDispatcher =
-            new ListenerDispatcher("craftrelay-runtime-listener-");
+    private final ListenerDispatcher listenerDispatcher;
     private final Map<Class<? extends NetworkMessage>, List<RuntimeRegistration>>
             typedRegistrations = new HashMap<>();
     private final List<RuntimeRegistration> metadataRegistrations = new ArrayList<>();
@@ -78,10 +80,22 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             MessageCodec codec,
             LocalInstanceIdentity identity,
             MessagingRuntimeConfig config) {
+        this(transport, codec, identity, config, new NodeDiagnostics());
+    }
+
+    DefaultMessagingRuntime(
+            NetworkTransport transport,
+            MessageCodec codec,
+            LocalInstanceIdentity identity,
+            MessagingRuntimeConfig config,
+            NodeDiagnostics diagnostics) {
         this.transport = Objects.requireNonNull(transport, "transport");
         this.codec = Objects.requireNonNull(codec, "codec");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.config = Objects.requireNonNull(config, "config");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+        listenerDispatcher =
+                new ListenerDispatcher("craftrelay-runtime-listener-", diagnostics);
         duplicateCache = new DuplicateMessageCache(config.duplicateCacheCapacity());
     }
 
@@ -174,10 +188,14 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         RuntimeRegistration registration;
         synchronized (lifecycleLock) {
             ensureSubscriptionsAllowed();
+            if (typedListenerCount() >= config.capacities().maximumListeners()) {
+                throw new IllegalStateException("maximum number of listeners reached");
+            }
             registration = createTypedRegistration(messageType, listener);
             typedRegistrations
                     .computeIfAbsent(messageType, ignored -> new ArrayList<>())
                     .add(registration);
+            diagnostics.setGauge(TelemetryGauge.LISTENERS, listenerCount());
         }
         RuntimeRegistration captured = registration;
         return Subscription.create(() -> removeTypedRegistration(messageType, captured));
@@ -191,6 +209,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             ensureSubscriptionsAllowed();
             registration = createMetadataRegistration(listener);
             metadataRegistrations.add(registration);
+            diagnostics.setGauge(TelemetryGauge.LISTENERS, listenerCount());
         }
         RuntimeRegistration captured = registration;
         return Subscription.create(() -> removeMetadataRegistration(captured));
@@ -309,6 +328,9 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             }
             if (failure == null && state == MessagingRuntimeState.STARTING) {
                 state = MessagingRuntimeState.RUNNING;
+                diagnostics.healthy(DiagnosticComponent.MESSAGING);
+                diagnostics.healthy(DiagnosticComponent.DISPATCHER);
+                diagnostics.healthy(DiagnosticComponent.TRANSPORT);
             } else {
                 if (state == MessagingRuntimeState.STARTING) {
                     state = MessagingRuntimeState.NEW;
@@ -342,6 +364,9 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             synchronized (lifecycleLock) {
                 state = MessagingRuntimeState.STOPPED;
             }
+            diagnostics.unavailable(DiagnosticComponent.MESSAGING);
+            diagnostics.unavailable(DiagnosticComponent.DISPATCHER);
+            diagnostics.unavailable(DiagnosticComponent.TRANSPORT);
         }
         if (completionFailure == null) {
             operation.complete(null);
@@ -355,15 +380,14 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
                 || state != MessagingRuntimeState.RUNNING) {
             return;
         }
+        diagnostics.increment(TelemetryCounter.MESSAGES_RECEIVED);
 
         PreparedMessage prepared;
         try {
             prepared = codec.prepare(payload);
         } catch (RuntimeException failure) {
-            LOGGER.log(
-                    System.Logger.Level.WARNING,
-                    "Discarding invalid CraftRelay envelope: {0}",
-                    failure.getMessage());
+            diagnostics.increment(TelemetryCounter.MESSAGE_INVALID_DROPPED);
+            diagnostics.report(DiagnosticCode.MESSAGE_DECODE_FAILED, failure);
             return;
         }
         ListenerDispatcher.DispatchLane<PreparedMessage> lane;
@@ -374,9 +398,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             }
             lane = decodeLanes.computeIfAbsent(
                     prepared.bindingKey(), this::createDecodeLane);
-            if (!lane.dispatch(prepared)) {
-                logOverflow("codec " + prepared.bindingKey().diagnosticName());
-            }
+            lane.dispatch(prepared);
         }
     }
 
@@ -385,16 +407,19 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         try {
             decoded = codec.decode(prepared);
         } catch (RuntimeException failure) {
-            LOGGER.log(
-                    System.Logger.Level.WARNING,
-                    "Discarding invalid CraftRelay payload: {0}",
-                    failure.getMessage());
+            diagnostics.increment(TelemetryCounter.MESSAGE_INVALID_DROPPED);
+            diagnostics.report(DiagnosticCode.MESSAGE_DECODE_FAILED, failure);
             return;
         }
-        if (!TargetMatcher.matches(decoded.target(), identity)
-                || !duplicateCache.markIfNew(decoded.messageId())) {
+        diagnostics.increment(TelemetryCounter.MESSAGES_DECODED);
+        if (!TargetMatcher.matches(decoded.target(), identity)) {
             return;
         }
+        if (!duplicateCache.markIfNew(decoded.messageId())) {
+            diagnostics.increment(TelemetryCounter.MESSAGE_DUPLICATES_DROPPED);
+            return;
+        }
+        diagnostics.setGauge(TelemetryGauge.DUPLICATE_CACHE_SIZE, duplicateCache.size());
 
         List<RuntimeRegistration> metadata;
         List<RuntimeRegistration> typed;
@@ -408,28 +433,25 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         }
         metadata.forEach(registration -> registration.dispatch(decoded));
         typed.forEach(registration -> registration.dispatch(decoded));
+        diagnostics.increment(TelemetryCounter.MESSAGES_DELIVERED);
     }
 
     private ListenerDispatcher.DispatchLane<PublishOperation> createPublishLane(
             MessageBindingKey bindingKey) {
         return listenerDispatcher.register(
-                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                config.capacities().dispatchQueueCapacity(),
                 this::encodeAndPublish,
-                failure ->
-                        logListenerFailure(
-                                "codec " + bindingKey.diagnosticName(), failure),
-                () -> logOverflow("codec " + bindingKey.diagnosticName()));
+                failure -> diagnostics.report(DiagnosticCode.MESSAGE_CODEC_FAILED, failure),
+                () -> {});
     }
 
     private ListenerDispatcher.DispatchLane<PreparedMessage> createDecodeLane(
             MessageBindingKey bindingKey) {
         return listenerDispatcher.register(
-                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                config.capacities().dispatchQueueCapacity(),
                 this::decodeAndDeliver,
-                failure ->
-                        logListenerFailure(
-                                "codec " + bindingKey.diagnosticName(), failure),
-                () -> logOverflow("codec " + bindingKey.diagnosticName()));
+                failure -> diagnostics.report(DiagnosticCode.MESSAGE_CODEC_FAILED, failure),
+                () -> {});
     }
 
     private void encodeAndPublish(PublishOperation publication) {
@@ -442,6 +464,8 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         try {
             encoded = codec.encode(publication.prepared());
         } catch (RuntimeException failure) {
+            diagnostics.increment(TelemetryCounter.MESSAGE_CODEC_FAILURES);
+            diagnostics.report(DiagnosticCode.MESSAGE_CODEC_FAILED, failure);
             publication.result().completeExceptionally(failure);
             return;
         }
@@ -457,14 +481,18 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
                             transport.publish(config.messageChannel(), encoded),
                             "transport.publish()");
         } catch (RuntimeException failure) {
+            recordPublishFailure(failure);
             publication.result().completeExceptionally(failure);
             return;
         }
         publish.whenComplete(
                 (ignored, failure) -> {
                     if (failure == null) {
+                        diagnostics.increment(TelemetryCounter.MESSAGES_SENT);
+                        diagnostics.healthy(DiagnosticComponent.TRANSPORT);
                         publication.result().complete(null);
                     } else {
+                        recordPublishFailure(AsyncFailures.unwrap(failure));
                         publication.result().completeExceptionally(
                                 AsyncFailures.unwrap(failure));
                     }
@@ -474,19 +502,19 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     private <M extends NetworkMessage> RuntimeRegistration createTypedRegistration(
             Class<M> messageType, Consumer<? super M> listener) {
         return new RuntimeRegistration(listenerDispatcher.register(
-                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                config.capacities().dispatchQueueCapacity(),
                 decoded -> listener.accept(messageType.cast(decoded.message())),
-                failure -> logListenerFailure(messageType.getName(), failure),
-                () -> logOverflow(messageType.getName())));
+                failure -> diagnostics.report(DiagnosticCode.LISTENER_FAILED, failure),
+                () -> {}));
     }
 
     private RuntimeRegistration createMetadataRegistration(
             Consumer<? super DecodedMessage> listener) {
         return new RuntimeRegistration(listenerDispatcher.register(
-                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                config.capacities().dispatchQueueCapacity(),
                 listener,
-                failure -> logListenerFailure("metadata", failure),
-                () -> logOverflow("metadata")));
+                failure -> diagnostics.report(DiagnosticCode.LISTENER_FAILED, failure),
+                () -> {}));
     }
 
     private void removeTypedRegistration(
@@ -498,12 +526,14 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
                 typedRegistrations.remove(messageType);
             }
         }
+        diagnostics.setGauge(TelemetryGauge.LISTENERS, listenerCount());
         registration.close();
     }
 
     private void removeMetadataRegistration(RuntimeRegistration registration) {
         synchronized (lifecycleLock) {
             metadataRegistrations.remove(registration);
+            diagnostics.setGauge(TelemetryGauge.LISTENERS, listenerCount());
         }
         registration.close();
     }
@@ -519,22 +549,6 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
                 || state == MessagingRuntimeState.STOPPED) {
             throw new IllegalStateException("messaging runtime is stopping or stopped");
         }
-    }
-
-    private static void logListenerFailure(String listenerType, Throwable failure) {
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                "Messaging listener {0} failed: {1}",
-                listenerType,
-                failure.getMessage());
-    }
-
-    private static void logOverflow(String listenerType) {
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                "Dropping delivery for slow messaging listener {0}; queue limit is {1}",
-                listenerType,
-                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY);
     }
 
     private static CompletableFuture<Void> failedFuture(String message) {
@@ -562,6 +576,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             activePublishes.add(operation);
             publication = new PublishOperation(prepared, operation);
             if (!lane.dispatch(publication)) {
+                diagnostics.increment(TelemetryCounter.MESSAGE_PUBLISH_FAILURES);
                 operation.completeExceptionally(
                         new IllegalStateException(
                                 "message codec queue is full or closed for "
@@ -572,6 +587,21 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
                 (ignored, failure) ->
                         releasePublication(publication));
         return operation;
+    }
+
+    private int listenerCount() {
+        return metadataRegistrations.size()
+                + typedRegistrations.values().stream().mapToInt(List::size).sum();
+    }
+
+    private int typedListenerCount() {
+        return typedRegistrations.values().stream().mapToInt(List::size).sum();
+    }
+
+    private void recordPublishFailure(Throwable failure) {
+        diagnostics.increment(TelemetryCounter.MESSAGE_PUBLISH_FAILURES);
+        diagnostics.degraded(DiagnosticComponent.TRANSPORT);
+        diagnostics.report(DiagnosticCode.MESSAGE_PUBLISH_FAILED, failure);
     }
 
     private void releasePublication(PublishOperation publication) {

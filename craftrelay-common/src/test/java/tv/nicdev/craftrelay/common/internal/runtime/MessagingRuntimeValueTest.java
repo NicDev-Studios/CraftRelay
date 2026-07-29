@@ -68,6 +68,29 @@ class MessagingRuntimeValueTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new MessagingRuntimeConfig("craftrelay", 0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new MessagingRuntimeConfig(
+                        "craftrelay",
+                        MessagingRuntimeConfig.MAXIMUM_DUPLICATE_CACHE_CAPACITY + 1));
+    }
+
+    @Test
+    void validatesBoundedMessagingCapacities() {
+        MessagingCapacityConfig defaults = MessagingCapacityConfig.defaults();
+
+        assertEquals(1_024, defaults.dispatchQueueCapacity());
+        assertEquals(4_096, defaults.maximumListeners());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new MessagingCapacityConfig(0, 1, 1, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new MessagingCapacityConfig(
+                        1,
+                        MessagingCapacityConfig.MAXIMUM_CONFIGURED_CAPACITY + 1,
+                        1,
+                        1));
     }
 
     @Test

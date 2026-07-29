@@ -33,6 +33,9 @@ import tv.nicdev.craftrelay.api.messaging.RequestContext;
 import tv.nicdev.craftrelay.api.messaging.RequestHandler;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistry;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryGauge;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingCapacityConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.runtime.RuntimeMessageRegistration;
 
@@ -45,18 +48,26 @@ final class DefaultCustomMessaging implements CustomMessaging, AutoCloseable {
     private final DefaultCraftRelayNode node;
     private final MessagingRuntime runtime;
     private final RequestHandlerRegistry requestHandlers;
+    private final MessagingCapacityConfig capacities;
+    private final NodeDiagnostics diagnostics;
     private final Map<DefaultMessageRegistration<?>, Set<HandlerLink>> registrations =
             new IdentityHashMap<>();
 
     private boolean closed;
+    private int pendingRegistrations;
+    private int activeHandlers;
 
     DefaultCustomMessaging(
             DefaultCraftRelayNode node,
             MessagingRuntime runtime,
-            RequestHandlerRegistry requestHandlers) {
+            RequestHandlerRegistry requestHandlers,
+            MessagingCapacityConfig capacities,
+            NodeDiagnostics diagnostics) {
         this.node = Objects.requireNonNull(node, "node");
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.requestHandlers = Objects.requireNonNull(requestHandlers, "requestHandlers");
+        this.capacities = Objects.requireNonNull(capacities, "capacities");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
     }
 
     @Override
@@ -66,20 +77,37 @@ final class DefaultCustomMessaging implements CustomMessaging, AutoCloseable {
         Objects.requireNonNull(codec, "codec");
         ensureAvailable();
 
+        synchronized (lock) {
+            ensureAvailableLocked();
+            if (registrations.size() + pendingRegistrations
+                    >= capacities.maximumCustomRegistrations()) {
+                throw unavailable("registering a custom message type at capacity", null);
+            }
+            pendingRegistrations++;
+        }
         RuntimeMessageRegistration<M> runtimeRegistration;
         try {
             runtimeRegistration = runtime.registerMessageType(type, codec);
-        } catch (IllegalStateException failure) {
-            throw unavailable("registering a custom message type", failure);
+        } catch (RuntimeException failure) {
+            synchronized (lock) {
+                pendingRegistrations--;
+            }
+            if (failure instanceof IllegalStateException) {
+                throw unavailable("registering a custom message type", failure);
+            }
+            throw failure;
         }
         DefaultMessageRegistration<M> registration =
                 new DefaultMessageRegistration<>(this, runtimeRegistration);
         synchronized (lock) {
+            pendingRegistrations--;
             if (closed || !node.isAvailable()) {
                 runtimeRegistration.close();
                 throw unavailable("registering a custom message type", null);
             }
             registrations.put(registration, newIdentitySet());
+            diagnostics.setGauge(
+                    TelemetryGauge.CUSTOM_REGISTRATIONS, registrations.size());
         }
         return registration;
     }
@@ -105,6 +133,9 @@ final class DefaultCustomMessaging implements CustomMessaging, AutoCloseable {
                     requireActiveLocked(ownedRequest, "request");
             Set<HandlerLink> responseDependencies =
                     requireActiveLocked(ownedResponse, "response");
+            if (activeHandlers >= capacities.maximumCustomRequestHandlers()) {
+                throw unavailable("registering a custom request handler at capacity", null);
+            }
             Subscription internal;
             try {
                 internal = requestHandlers.register(
@@ -132,6 +163,7 @@ final class DefaultCustomMessaging implements CustomMessaging, AutoCloseable {
             link.external(external);
             requestDependencies.add(link);
             responseDependencies.add(link);
+            activeHandlers++;
             return external;
         }
     }
@@ -155,6 +187,8 @@ final class DefaultCustomMessaging implements CustomMessaging, AutoCloseable {
                     registration ->
                             messageTypes.add(registration.runtimeRegistration()));
             registrations.clear();
+            activeHandlers = 0;
+            diagnostics.setGauge(TelemetryGauge.CUSTOM_REGISTRATIONS, 0);
         }
         handlers.forEach(Subscription::close);
         messageTypes.forEach(RuntimeMessageRegistration::close);
@@ -193,22 +227,28 @@ final class DefaultCustomMessaging implements CustomMessaging, AutoCloseable {
             handlers = dependencies.stream()
                     .map(HandlerLink::external)
                     .toList();
+            diagnostics.setGauge(
+                    TelemetryGauge.CUSTOM_REGISTRATIONS, registrations.size());
         }
         handlers.forEach(Subscription::close);
         registration.runtimeRegistration().close();
     }
 
     private void closeHandler(HandlerLink link) {
+        boolean removed = false;
         synchronized (lock) {
             Set<HandlerLink> requestDependencies =
                     registrations.get(link.request());
             if (requestDependencies != null) {
-                requestDependencies.remove(link);
+                removed = requestDependencies.remove(link);
             }
             Set<HandlerLink> responseDependencies =
                     registrations.get(link.response());
             if (responseDependencies != null) {
-                responseDependencies.remove(link);
+                removed |= responseDependencies.remove(link);
+            }
+            if (removed) {
+                activeHandlers--;
             }
         }
         link.internal().close();

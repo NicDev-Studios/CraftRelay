@@ -1,5 +1,7 @@
 # CraftRelay uses the same schema on Paper and Velocity.
 # Every running node needs its own stable ID.
+config-version: 1
+
 instance:
   id: "change-me"
   group: null
@@ -16,6 +18,10 @@ redis:
 messaging:
   prefix: "craftrelay"
   duplicate-cache-capacity: 10000
+  dispatch-queue-capacity: 1024
+  maximum-listeners: 4096
+  maximum-custom-registrations: 1024
+  maximum-custom-request-handlers: 1024
 
 requests:
   maximum-pending: 4096

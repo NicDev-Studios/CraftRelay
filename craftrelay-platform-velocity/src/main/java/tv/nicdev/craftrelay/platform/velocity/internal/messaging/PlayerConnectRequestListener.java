@@ -20,6 +20,8 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import java.util.Objects;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tv.nicdev.craftrelay.api.message.PlayerConnectRequest;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.platform.velocity.internal.player.LocalPlayerSessions;
@@ -27,12 +29,10 @@ import tv.nicdev.craftrelay.platform.velocity.internal.player.LocalPlayerSession
 /** Executes built-in player connection requests on Velocity's scheduler. */
 public final class PlayerConnectRequestListener {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(PlayerConnectRequestListener.class.getName());
-
     private final Object plugin;
     private final ProxyServer server;
     private final LocalPlayerSessions sessions;
+    private final Logger logger;
 
     /**
      * Creates a request listener.
@@ -43,9 +43,30 @@ public final class PlayerConnectRequestListener {
      */
     public PlayerConnectRequestListener(
             Object plugin, ProxyServer server, LocalPlayerSessions sessions) {
+        this(
+                plugin,
+                server,
+                sessions,
+                LoggerFactory.getLogger(PlayerConnectRequestListener.class));
+    }
+
+    /**
+     * Creates a request listener using the platform logger.
+     *
+     * @param plugin owning plugin
+     * @param server active proxy
+     * @param sessions shared local session index
+     * @param logger platform logger
+     */
+    public PlayerConnectRequestListener(
+            Object plugin,
+            ProxyServer server,
+            LocalPlayerSessions sessions,
+            Logger logger) {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.server = Objects.requireNonNull(server, "server");
         this.sessions = Objects.requireNonNull(sessions, "sessions");
+        this.logger = Objects.requireNonNull(logger, "logger");
     }
 
     /**
@@ -69,9 +90,8 @@ public final class PlayerConnectRequestListener {
             return;
         }
         if (destination.isEmpty()) {
-            LOGGER.log(
-                    System.Logger.Level.WARNING,
-                    "Unknown Velocity server in PlayerConnectRequest: " + request.serverId());
+            logger.warn(
+                    "Unknown Velocity server in PlayerConnectRequest: {}", request.serverId());
             return;
         }
         player.orElseThrow()
@@ -79,15 +99,15 @@ public final class PlayerConnectRequestListener {
                 .connect()
                 .whenComplete((result, failure) -> {
                     if (failure != null) {
-                        LOGGER.log(
-                                System.Logger.Level.WARNING,
-                                "Player connection request failed for " + request.playerId(),
+                        logger.warn(
+                                "Player connection request failed for {}",
+                                request.playerId(),
                                 AsyncFailures.unwrap(failure));
                     } else if (!result.isSuccessful()) {
-                        LOGGER.log(
-                                System.Logger.Level.WARNING,
-                                "Velocity rejected player connection request for "
-                                        + request.playerId() + ": " + result.getStatus());
+                        logger.warn(
+                                "Velocity rejected player connection request for {}: {}",
+                                request.playerId(),
+                                result.getStatus());
                     }
                 });
     }

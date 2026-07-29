@@ -25,6 +25,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryGauge;
 
 /**
  * Internal owner of isolated, ordered listener queues executed on virtual threads.
@@ -38,6 +40,7 @@ public final class ListenerDispatcher implements AutoCloseable {
     public static final int DEFAULT_QUEUE_CAPACITY = 1_024;
 
     private final ExecutorService executor;
+    private final NodeDiagnostics diagnostics;
     private final Set<DispatchLane<?>> lanes = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -47,10 +50,21 @@ public final class ListenerDispatcher implements AutoCloseable {
      * @param threadNamePrefix non-blank virtual-thread name prefix
      */
     public ListenerDispatcher(String threadNamePrefix) {
+        this(threadNamePrefix, new NodeDiagnostics());
+    }
+
+    /**
+     * Creates a dispatcher using shared node diagnostics.
+     *
+     * @param threadNamePrefix non-blank virtual-thread name prefix
+     * @param diagnostics node diagnostics
+     */
+    public ListenerDispatcher(String threadNamePrefix, NodeDiagnostics diagnostics) {
         Objects.requireNonNull(threadNamePrefix, "threadNamePrefix");
         if (threadNamePrefix.isBlank()) {
             throw new IllegalArgumentException("threadNamePrefix must not be blank");
         }
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
         executor = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name(threadNamePrefix, 0).factory());
     }
@@ -84,8 +98,8 @@ public final class ListenerDispatcher implements AutoCloseable {
                 new DispatchLane<>(
                         this, capacity, listener, failureHandler, overflowHandler);
         lanes.add(lane);
+        diagnostics.addGauge(TelemetryGauge.DISPATCH_LANES, 1);
         if (closed.get()) {
-            lanes.remove(lane);
             lane.close();
             throw new IllegalStateException("dispatcher is closed");
         }
@@ -105,7 +119,9 @@ public final class ListenerDispatcher implements AutoCloseable {
     }
 
     private void unregister(DispatchLane<?> lane) {
-        lanes.remove(lane);
+        if (lanes.remove(lane)) {
+            diagnostics.addGauge(TelemetryGauge.DISPATCH_LANES, -1);
+        }
     }
 
     int registeredLaneCount() {
@@ -303,6 +319,7 @@ public final class ListenerDispatcher implements AutoCloseable {
 
         private void invokeOverflowHandler() {
             try {
+                owner.diagnostics.overflow();
                 overflowHandler.run();
             } catch (Throwable diagnosticFailure) {
                 if (isFatal(diagnosticFailure)) {

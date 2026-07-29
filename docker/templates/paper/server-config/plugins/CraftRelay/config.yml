@@ -1,3 +1,5 @@
+config-version: 1
+
 instance:
   id: "paper-1"
   group: "docker"
@@ -14,6 +16,10 @@ redis:
 messaging:
   prefix: "craftrelay-docker"
   duplicate-cache-capacity: 10000
+  dispatch-queue-capacity: 1024
+  maximum-listeners: 4096
+  maximum-custom-registrations: 1024
+  maximum-custom-request-handlers: 1024
 
 requests:
   maximum-pending: 4096

@@ -45,6 +45,9 @@ import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryCounter;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 import tv.nicdev.craftrelay.common.internal.state.NetworkPresenceStore;
@@ -313,6 +316,7 @@ public final class LettuceRedisPresenceStore implements NetworkPresenceStore {
     private final InstancePresenceConfig instanceConfig;
     private final PlayerPresenceConfig playerConfig;
     private final boolean closesBackend;
+    private final NodeDiagnostics diagnostics;
     private final String indexKey;
     private final String instanceKeyPrefix;
     private final String playerIndexKey;
@@ -337,7 +341,8 @@ public final class LettuceRedisPresenceStore implements NetworkPresenceStore {
                 new LettuceRedisBackend(Objects.requireNonNull(redisConfig, "redisConfig")),
                 instanceConfig,
                 playerConfig,
-                true);
+                true,
+                new NodeDiagnostics());
     }
 
     LettuceRedisPresenceStore(
@@ -345,11 +350,26 @@ public final class LettuceRedisPresenceStore implements NetworkPresenceStore {
             InstancePresenceConfig instanceConfig,
             PlayerPresenceConfig playerConfig,
             boolean closesBackend) {
+        this(
+                backend,
+                instanceConfig,
+                playerConfig,
+                closesBackend,
+                new NodeDiagnostics());
+    }
+
+    LettuceRedisPresenceStore(
+            LettuceRedisBackend backend,
+            InstancePresenceConfig instanceConfig,
+            PlayerPresenceConfig playerConfig,
+            boolean closesBackend,
+            NodeDiagnostics diagnostics) {
         this.backend = Objects.requireNonNull(backend, "backend");
         this.instanceConfig = Objects.requireNonNull(instanceConfig, "instanceConfig");
         this.playerConfig = Objects.requireNonNull(playerConfig, "playerConfig");
         this.playerConfig.validateCompatible(this.instanceConfig);
         this.closesBackend = closesBackend;
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
         indexKey = instanceConfig.keyPrefix() + ":presence:instances";
         instanceKeyPrefix = instanceConfig.keyPrefix() + ":presence:instance:";
         playerIndexKey = playerConfig.keyPrefix() + ":presence:players";
@@ -991,7 +1011,7 @@ public final class LettuceRedisPresenceStore implements NetworkPresenceStore {
         }
     }
 
-    private static <T> CompletableFuture<T> mapFailure(
+    private <T> CompletableFuture<T> mapFailure(
             CompletionStage<T> source, String message) {
         CompletableFuture<T> result = new CompletableFuture<>();
         source.whenComplete((value, failure) -> {
@@ -999,6 +1019,8 @@ public final class LettuceRedisPresenceStore implements NetworkPresenceStore {
                 result.complete(value);
             } else {
                 Throwable cause = AsyncFailures.unwrap(failure);
+                diagnostics.increment(TelemetryCounter.REDIS_OPERATION_FAILURES);
+                diagnostics.report(DiagnosticCode.REDIS_OPERATION_FAILED, cause);
                 result.completeExceptionally(
                         cause instanceof ApiUnavailableException
                                 ? cause
@@ -1030,17 +1052,25 @@ public final class LettuceRedisPresenceStore implements NetworkPresenceStore {
                 }
             }
             if (readiness != null) {
+                diagnostics.increment(TelemetryCounter.REDIS_RECONNECTS);
+                diagnostics.report(DiagnosticCode.REDIS_RECONNECTED, null);
                 readiness.complete(null);
             }
         }
 
         @Override
         public void onRedisDisconnected(RedisChannelHandler<?, ?> redisConnection) {
+            boolean disconnected = false;
             synchronized (lifecycleLock) {
                 if (state == StoreState.CONNECTED) {
                     state = StoreState.CONNECTING;
                     reconnectFuture = new CompletableFuture<>();
+                    disconnected = true;
                 }
+            }
+            if (disconnected) {
+                diagnostics.increment(TelemetryCounter.REDIS_DISCONNECTS);
+                diagnostics.report(DiagnosticCode.REDIS_DISCONNECTED, null);
             }
         }
     }

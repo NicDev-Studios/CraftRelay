@@ -28,6 +28,11 @@ import tv.nicdev.craftrelay.api.message.PlayerLocationResponse;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatcher;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticComponent;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticsSnapshot;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryCounter;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.presence.InstanceRegistry;
 import tv.nicdev.craftrelay.common.internal.presence.NodeLease;
@@ -40,14 +45,12 @@ import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistries;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistry;
 import tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingCapacityConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.state.NetworkPresenceStore;
 import tv.nicdev.craftrelay.common.internal.state.PlayerSessionKey;
 
 final class DefaultCraftRelayNode implements CraftRelayNode {
-
-    private static final System.Logger LOGGER =
-            System.getLogger(DefaultCraftRelayNode.class.getName());
 
     private final Object lifecycleLock = new Object();
     private final MessagingRuntime runtime;
@@ -59,6 +62,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
     private final InstanceRegistry instanceRegistry;
     private final PlayerRegistry playerRegistry;
     private final PlayerOwnershipListener ownershipListener;
+    private final NodeDiagnostics diagnostics;
     private final CraftRelayApi api;
 
     private volatile NodeState state = NodeState.NEW;
@@ -67,14 +71,19 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
 
     DefaultCraftRelayNode(
             MessagingRuntime runtime,
+            MessagingCapacityConfig capacityConfig,
             LocalInstanceIdentity identity,
             RequestRuntimeConfig requestConfig,
             InstancePresenceConfig instanceConfig,
             PlayerPresenceConfig playerConfig,
             NetworkPresenceStore presenceStore,
             IntSupplier onlinePlayerCount,
-            PlayerOwnershipListener ownershipListener) {
+            PlayerOwnershipListener ownershipListener,
+            NodeDiagnostics diagnostics) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+        MessagingCapacityConfig capacities =
+                Objects.requireNonNull(capacityConfig, "capacityConfig");
         this.ownershipListener =
                 Objects.requireNonNull(ownershipListener, "ownershipListener");
         Objects.requireNonNull(instanceConfig, "instanceConfig");
@@ -90,11 +99,17 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                         localIdentity,
                         playerConfig,
                         nodeLease,
-                        this::handlePlayerOwnershipLoss);
+                        this::handlePlayerOwnershipLoss,
+                        diagnostics);
         requestManager =
-                new PendingRequestManager(runtime, requestConfig, completionDispatcher);
+                new PendingRequestManager(
+                        runtime, requestConfig, completionDispatcher, diagnostics);
         requestHandlers =
-                RequestHandlerRegistries.create(runtime, completionDispatcher);
+                RequestHandlerRegistries.create(
+                        runtime,
+                        completionDispatcher,
+                        diagnostics,
+                        capacities);
         requestHandlers.register(
                 PlayerLocationRequest.class,
                 (request, context) -> locationResponse(request));
@@ -109,8 +124,11 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                                         == tv.nicdev.craftrelay.api.model.NetworkInstanceType.PROXY
                                 ? playerRegistry::onlinePlayerCount
                                 : Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
-                        this::handleLeaseLoss);
-        customMessaging = new DefaultCustomMessaging(this, runtime, requestHandlers);
+                        this::handleLeaseLoss,
+                        diagnostics);
+        customMessaging =
+                new DefaultCustomMessaging(
+                        this, runtime, requestHandlers, capacities, diagnostics);
         api =
                 new DefaultCraftRelayApi(
                         this,
@@ -172,6 +190,11 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
     @Override
     public PlayerPresence playerPresence() {
         return playerRegistry;
+    }
+
+    @Override
+    public DiagnosticsSnapshot diagnostics() {
+        return diagnostics.snapshot();
     }
 
     @Override
@@ -242,10 +265,13 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             }
             if (failure == null && state == NodeState.STARTING) {
                 state = NodeState.RUNNING;
+                diagnostics.healthy(DiagnosticComponent.NODE);
+                diagnostics.healthy(DiagnosticComponent.REQUESTS);
             } else {
                 if (state == NodeState.STARTING) {
                     state = NodeState.NEW;
                 }
+                diagnostics.unavailable(DiagnosticComponent.NODE);
                 if (completionFailure == null) {
                     completionFailure =
                             new ApiUnavailableException(
@@ -256,6 +282,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
         if (completionFailure == null) {
             completionDispatcher.complete(operation, null);
         } else {
+            diagnostics.report(DiagnosticCode.NODE_START_FAILED, completionFailure);
             completionDispatcher.fail(
                     operation, AsyncFailures.unwrap(completionFailure));
         }
@@ -310,33 +337,32 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                             synchronized (lifecycleLock) {
                                 state = NodeState.STOPPED;
                             }
+                            diagnostics.unavailable(DiagnosticComponent.NODE);
+                            diagnostics.unavailable(DiagnosticComponent.REQUESTS);
                             if (failure == null) {
                                 operation.complete(null);
                             } else {
+                                diagnostics.report(DiagnosticCode.NODE_STOP_FAILED, failure);
                                 operation.completeExceptionally(failure);
                             }
                         });
     }
 
     private void handleLeaseLoss(Throwable failure) {
-        LOGGER.log(
-                System.Logger.Level.ERROR,
-                "CraftRelay instance lease was lost; stopping node",
-                failure);
+        diagnostics.increment(TelemetryCounter.INSTANCE_LEASE_LOSSES);
+        diagnostics.unavailable(DiagnosticComponent.INSTANCE_PRESENCE);
+        diagnostics.unavailable(DiagnosticComponent.NODE);
+        diagnostics.report(DiagnosticCode.INSTANCE_LEASE_LOST, failure);
         close();
     }
 
     private void handlePlayerOwnershipLoss(PlayerSessionKey session) {
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                "Local player session ownership was lost: " + session);
+        diagnostics.increment(TelemetryCounter.PLAYER_OWNERSHIP_LOSSES);
+        diagnostics.report(DiagnosticCode.PLAYER_OWNERSHIP_LOST, null);
         try {
             ownershipListener.onOwnershipLost(session);
         } catch (RuntimeException failure) {
-            LOGGER.log(
-                    System.Logger.Level.ERROR,
-                    "Player ownership listener failed for " + session,
-                    failure);
+            diagnostics.report(DiagnosticCode.PLAYER_OWNERSHIP_LOST, failure);
         }
     }
 

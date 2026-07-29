@@ -36,6 +36,10 @@ import tv.nicdev.craftrelay.api.message.InstanceStoppedMessage;
 import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticComponent;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryCounter;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.state.InstanceStateProvider;
@@ -49,9 +53,6 @@ import tv.nicdev.craftrelay.common.internal.state.NetworkInstanceStore;
  */
 public final class InstanceRegistry implements InstanceStateProvider {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(InstanceRegistry.class.getName());
-
     private final Object lifecycleLock = new Object();
     private final NetworkInstanceStore store;
     private final MessagingRuntime runtime;
@@ -63,6 +64,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
     private final Instant startedAt;
     private final NodeLease nodeLease;
     private final ScheduledExecutorService executor;
+    private final NodeDiagnostics diagnostics;
 
     private RegistryState state = RegistryState.NEW;
     private CompletableFuture<Void> startFuture;
@@ -86,7 +88,8 @@ public final class InstanceRegistry implements InstanceStateProvider {
                 config,
                 NodeLease.create(),
                 onlinePlayerCount,
-                leaseLossHandler);
+                leaseLossHandler,
+                new NodeDiagnostics());
     }
 
     /** Creates an instance registry using the node-wide presence lease. */
@@ -106,7 +109,30 @@ public final class InstanceRegistry implements InstanceStateProvider {
                 nodeLease,
                 onlinePlayerCount,
                 leaseLossHandler,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                new NodeDiagnostics());
+    }
+
+    /** Creates an instance registry sharing node diagnostics. */
+    public InstanceRegistry(
+            NetworkInstanceStore store,
+            MessagingRuntime runtime,
+            LocalInstanceIdentity identity,
+            InstancePresenceConfig config,
+            NodeLease nodeLease,
+            IntSupplier onlinePlayerCount,
+            Consumer<? super Throwable> leaseLossHandler,
+            NodeDiagnostics diagnostics) {
+        this(
+                store,
+                runtime,
+                identity,
+                config,
+                nodeLease,
+                onlinePlayerCount,
+                leaseLossHandler,
+                Clock.systemUTC(),
+                diagnostics);
     }
 
     InstanceRegistry(
@@ -125,7 +151,8 @@ public final class InstanceRegistry implements InstanceStateProvider {
                 NodeLease.create(),
                 onlinePlayerCount,
                 leaseLossHandler,
-                clock);
+                clock,
+                new NodeDiagnostics());
     }
 
     InstanceRegistry(
@@ -137,6 +164,28 @@ public final class InstanceRegistry implements InstanceStateProvider {
             IntSupplier onlinePlayerCount,
             Consumer<? super Throwable> leaseLossHandler,
             Clock clock) {
+        this(
+                store,
+                runtime,
+                identity,
+                config,
+                nodeLease,
+                onlinePlayerCount,
+                leaseLossHandler,
+                clock,
+                new NodeDiagnostics());
+    }
+
+    InstanceRegistry(
+            NetworkInstanceStore store,
+            MessagingRuntime runtime,
+            LocalInstanceIdentity identity,
+            InstancePresenceConfig config,
+            NodeLease nodeLease,
+            IntSupplier onlinePlayerCount,
+            Consumer<? super Throwable> leaseLossHandler,
+            Clock clock,
+            NodeDiagnostics diagnostics) {
         this.store = Objects.requireNonNull(store, "store");
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         this.identity = Objects.requireNonNull(identity, "identity");
@@ -145,6 +194,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
         this.onlinePlayerCount = Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount");
         this.leaseLossHandler = Objects.requireNonNull(leaseLossHandler, "leaseLossHandler");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
         startedAt = clock.instant();
         executor = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform()
@@ -192,7 +242,14 @@ public final class InstanceRegistry implements InstanceStateProvider {
                         values -> values.stream()
                                 .sorted(Comparator.comparing(NetworkInstance::id))
                                 .toList(),
-                        executor);
+                        executor)
+                .whenComplete((ignored, failure) -> {
+                    if (failure == null) {
+                        diagnostics.healthy(DiagnosticComponent.INSTANCE_PRESENCE);
+                    } else {
+                        diagnostics.degraded(DiagnosticComponent.INSTANCE_PRESENCE);
+                    }
+                });
     }
 
     /** Stops heartbeats, releases this owner's lease, and best-effort announces shutdown. */
@@ -218,6 +275,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
                         synchronized (lifecycleLock) {
                             state = RegistryState.STOPPED;
                         }
+                        diagnostics.unavailable(DiagnosticComponent.INSTANCE_PRESENCE);
                     }, executor);
             return stopFuture;
         }
@@ -272,9 +330,11 @@ public final class InstanceRegistry implements InstanceStateProvider {
             if (state == RegistryState.STARTING) {
                 if (completionFailure == null) {
                     state = RegistryState.RUNNING;
+                    diagnostics.healthy(DiagnosticComponent.INSTANCE_PRESENCE);
                     scheduleHeartbeat();
                 } else {
                     state = RegistryState.NEW;
+                    diagnostics.unavailable(DiagnosticComponent.INSTANCE_PRESENCE);
                 }
             } else if (completionFailure == null) {
                 completionFailure =
@@ -324,6 +384,8 @@ public final class InstanceRegistry implements InstanceStateProvider {
                     new LeaseLostException(
                             "Instance lease was lost: " + identity.instanceId()));
         }
+        diagnostics.increment(TelemetryCounter.INSTANCE_HEARTBEAT_SUCCESSES);
+        diagnostics.healthy(DiagnosticComponent.INSTANCE_PRESENCE);
         return publish(new InstanceHeartbeatMessage(snapshot))
                 .handle((ignored, failure) -> {
                     if (failure != null) {
@@ -346,7 +408,9 @@ public final class InstanceRegistry implements InstanceStateProvider {
             return;
         }
         if (cause != null) {
-            logFailure("Could not renew instance heartbeat", cause);
+            diagnostics.increment(TelemetryCounter.INSTANCE_HEARTBEAT_FAILURES);
+            diagnostics.degraded(DiagnosticComponent.INSTANCE_PRESENCE);
+            diagnostics.report(DiagnosticCode.INSTANCE_HEARTBEAT_FAILED, cause);
         }
         scheduleHeartbeat();
     }
@@ -434,12 +498,10 @@ public final class InstanceRegistry implements InstanceStateProvider {
                 playerCount);
     }
 
-    private static void logFailure(String message, Throwable failure) {
-        Throwable cause = AsyncFailures.unwrap(failure);
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                message + ": " + cause.getMessage(),
-                cause);
+    private void logFailure(String message, Throwable failure) {
+        diagnostics.report(
+                DiagnosticCode.REDIS_OPERATION_FAILED,
+                AsyncFailures.unwrap(failure));
     }
 
     private enum RegistryState {

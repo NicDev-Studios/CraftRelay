@@ -35,6 +35,7 @@ import org.snakeyaml.engine.v2.schema.CoreSchema;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
 import tv.nicdev.craftrelay.common.internal.request.RequestRuntimeConfig;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingCapacityConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeConfig;
 import tv.nicdev.craftrelay.transport.redis.RedisTransportConfig;
 
@@ -73,8 +74,14 @@ public final class YamlCraftRelayConfigLoader {
         }
 
         Map<String, Object> root = mapping(document, "root");
+        int configVersion = integer(root, "config-version");
+        if (configVersion != 1) {
+            throw new IllegalArgumentException(
+                    "Unsupported CraftRelay config-version: " + configVersion);
+        }
         requireKeys(root, "root", Set.of(
-                "instance", "redis", "messaging", "requests", "presence", "platform"));
+                "config-version", "instance", "redis", "messaging", "requests",
+                "presence", "platform"));
 
         Map<String, Object> instance = section(root, "instance");
         requireKeys(instance, "instance", Set.of("id", "group"));
@@ -85,7 +92,13 @@ public final class YamlCraftRelayConfigLoader {
                 "connection-timeout"));
 
         Map<String, Object> messaging = section(root, "messaging");
-        requireKeys(messaging, "messaging", Set.of("prefix", "duplicate-cache-capacity"));
+        requireKeys(messaging, "messaging", Set.of(
+                "prefix",
+                "duplicate-cache-capacity",
+                "dispatch-queue-capacity",
+                "maximum-listeners",
+                "maximum-custom-registrations",
+                "maximum-custom-request-handlers"));
 
         Map<String, Object> requests = section(root, "requests");
         requireKeys(requests, "requests", Set.of("maximum-pending"));
@@ -117,7 +130,13 @@ public final class YamlCraftRelayConfigLoader {
                         bool(redis, "tls"),
                         duration(redis, "connection-timeout")),
                 new MessagingRuntimeConfig(
-                        prefix, integer(messaging, "duplicate-cache-capacity")),
+                        prefix,
+                        integer(messaging, "duplicate-cache-capacity"),
+                        new MessagingCapacityConfig(
+                                integer(messaging, "dispatch-queue-capacity"),
+                                integer(messaging, "maximum-listeners"),
+                                integer(messaging, "maximum-custom-registrations"),
+                                integer(messaging, "maximum-custom-request-handlers"))),
                 new RequestRuntimeConfig(integer(requests, "maximum-pending")),
                 new InstancePresenceConfig(
                         prefix,

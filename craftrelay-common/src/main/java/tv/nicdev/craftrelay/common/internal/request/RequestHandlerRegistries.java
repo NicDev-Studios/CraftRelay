@@ -17,6 +17,8 @@ package tv.nicdev.craftrelay.common.internal.request;
 
 import java.util.Objects;
 import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatcher;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingCapacityConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 
 /**
@@ -39,6 +41,21 @@ public final class RequestHandlerRegistries {
             FutureCompletionDispatcher completionDispatcher) {
         return new DefaultRequestHandlerRegistry(
                 Objects.requireNonNull(runtime, "runtime"),
-                Objects.requireNonNull(completionDispatcher, "completionDispatcher"));
+                Objects.requireNonNull(completionDispatcher, "completionDispatcher"),
+                new NodeDiagnostics(),
+                MessagingCapacityConfig.defaults());
+    }
+
+    /** Creates a registry sharing node diagnostics and configured capacities. */
+    public static RequestHandlerRegistry create(
+            MessagingRuntime runtime,
+            FutureCompletionDispatcher completionDispatcher,
+            NodeDiagnostics diagnostics,
+            MessagingCapacityConfig capacities) {
+        return new DefaultRequestHandlerRegistry(
+                Objects.requireNonNull(runtime, "runtime"),
+                Objects.requireNonNull(completionDispatcher, "completionDispatcher"),
+                Objects.requireNonNull(diagnostics, "diagnostics"),
+                Objects.requireNonNull(capacities, "capacities"));
     }
 }

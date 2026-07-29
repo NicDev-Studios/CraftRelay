@@ -10,6 +10,8 @@ import java.util.Objects;
 
 final class PresenceValidation {
 
+    private static final int MAXIMUM_BATCH_SIZE = 10_000;
+
     private PresenceValidation() {
     }
 
@@ -38,8 +40,9 @@ final class PresenceValidation {
     }
 
     static int requirePositiveBatch(int value, String name) {
-        if (value < 1) {
-            throw new IllegalArgumentException(name + " must be positive");
+        if (value < 1 || value > MAXIMUM_BATCH_SIZE) {
+            throw new IllegalArgumentException(
+                    name + " must be between 1 and " + MAXIMUM_BATCH_SIZE);
         }
         return value;
     }

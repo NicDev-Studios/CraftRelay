@@ -17,6 +17,7 @@ package tv.nicdev.craftrelay.common.internal.node;
 
 import java.util.Objects;
 import java.util.function.IntSupplier;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerOwnershipListener;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
@@ -61,7 +62,8 @@ public final class CraftRelayNodes {
                 PlayerPresenceConfig.defaults(),
                 presenceStore,
                 onlinePlayerCount,
-                PlayerOwnershipListener.NOOP);
+                PlayerOwnershipListener.NOOP,
+                new NodeDiagnostics());
     }
 
     /**
@@ -95,7 +97,8 @@ public final class CraftRelayNodes {
                 playerConfig,
                 presenceStore,
                 onlinePlayerCount,
-                PlayerOwnershipListener.NOOP);
+                PlayerOwnershipListener.NOOP,
+                new NodeDiagnostics());
     }
 
     /**
@@ -122,20 +125,51 @@ public final class CraftRelayNodes {
             NetworkPresenceStore presenceStore,
             IntSupplier onlinePlayerCount,
             PlayerOwnershipListener ownershipListener) {
+        return create(
+                transport,
+                identity,
+                runtimeConfig,
+                requestConfig,
+                instanceConfig,
+                playerConfig,
+                presenceStore,
+                onlinePlayerCount,
+                ownershipListener,
+                new NodeDiagnostics());
+    }
+
+    /**
+     * Creates a node whose components share one diagnostics owner.
+     */
+    public static CraftRelayNode create(
+            NetworkTransport transport,
+            LocalInstanceIdentity identity,
+            MessagingRuntimeConfig runtimeConfig,
+            RequestRuntimeConfig requestConfig,
+            InstancePresenceConfig instanceConfig,
+            PlayerPresenceConfig playerConfig,
+            NetworkPresenceStore presenceStore,
+            IntSupplier onlinePlayerCount,
+            PlayerOwnershipListener ownershipListener,
+            NodeDiagnostics diagnostics) {
         LocalInstanceIdentity validatedIdentity = Objects.requireNonNull(identity, "identity");
+        NodeDiagnostics nodeDiagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
         MessagingRuntime runtime =
                 MessagingRuntimes.create(
                         Objects.requireNonNull(transport, "transport"),
                         validatedIdentity,
-                        Objects.requireNonNull(runtimeConfig, "runtimeConfig"));
+                        Objects.requireNonNull(runtimeConfig, "runtimeConfig"),
+                        nodeDiagnostics);
         return new DefaultCraftRelayNode(
                 runtime,
+                runtimeConfig.capacities(),
                 validatedIdentity,
                 Objects.requireNonNull(requestConfig, "requestConfig"),
                 Objects.requireNonNull(instanceConfig, "instanceConfig"),
                 Objects.requireNonNull(playerConfig, "playerConfig"),
                 Objects.requireNonNull(presenceStore, "presenceStore"),
                 Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
-                Objects.requireNonNull(ownershipListener, "ownershipListener"));
+                Objects.requireNonNull(ownershipListener, "ownershipListener"),
+                nodeDiagnostics);
     }
 }

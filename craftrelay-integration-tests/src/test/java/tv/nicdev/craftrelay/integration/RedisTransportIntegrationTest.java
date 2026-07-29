@@ -63,6 +63,7 @@ import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
 import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
+import tv.nicdev.craftrelay.common.internal.observability.HealthStatus;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNodes;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
@@ -897,6 +898,40 @@ class RedisTransportIntegrationTest {
                 .join();
 
         assertTrue(afterInterruption.await(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void nodeHealthDegradesDuringRedisOutageAndRecovers() throws Exception {
+        InstancePresenceConfig fastPresence =
+                new InstancePresenceConfig(
+                        "craftrelay-health",
+                        Duration.ofMillis(100),
+                        Duration.ofSeconds(1),
+                        64);
+        CraftRelayNode node =
+                newNode(
+                        "health-server",
+                        NetworkInstanceType.SERVER,
+                        Optional.empty(),
+                        fastPresence,
+                        () -> 0);
+        node.start().orTimeout(10, TimeUnit.SECONDS).join();
+        await(
+                () -> node.diagnostics().health() == HealthStatus.HEALTHY,
+                Duration.ofSeconds(5));
+
+        redisProxy.disable();
+        try {
+            await(
+                    () -> node.diagnostics().health() == HealthStatus.DEGRADED,
+                    Duration.ofSeconds(10));
+        } finally {
+            redisProxy.enable();
+        }
+
+        await(
+                () -> node.diagnostics().health() == HealthStatus.HEALTHY,
+                Duration.ofSeconds(20));
     }
 
     @Test

@@ -35,6 +35,10 @@ import tv.nicdev.craftrelay.api.exception.RequestTimeoutException;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatcher;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryCounter;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryGauge;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 
@@ -47,6 +51,7 @@ public final class PendingRequestManager implements AutoCloseable {
     private final MessagingRuntime runtime;
     private final int maximumPendingRequests;
     private final FutureCompletionDispatcher completionDispatcher;
+    private final NodeDiagnostics diagnostics;
     private final ScheduledExecutorService timeoutScheduler;
     private final Map<UUID, PendingRequest<?>> pendingRequests = new HashMap<>();
     private final Subscription responseSubscription;
@@ -64,10 +69,20 @@ public final class PendingRequestManager implements AutoCloseable {
             MessagingRuntime runtime,
             RequestRuntimeConfig config,
             FutureCompletionDispatcher completionDispatcher) {
+        this(runtime, config, completionDispatcher, new NodeDiagnostics());
+    }
+
+    /** Creates a request manager sharing node diagnostics. */
+    public PendingRequestManager(
+            MessagingRuntime runtime,
+            RequestRuntimeConfig config,
+            FutureCompletionDispatcher completionDispatcher,
+            NodeDiagnostics diagnostics) {
         this.runtime = Objects.requireNonNull(runtime, "runtime");
         Objects.requireNonNull(config, "config");
         this.completionDispatcher =
                 Objects.requireNonNull(completionDispatcher, "completionDispatcher");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
         maximumPendingRequests = config.maximumPendingRequests();
         timeoutScheduler =
                 Executors.newSingleThreadScheduledExecutor(
@@ -102,9 +117,11 @@ public final class PendingRequestManager implements AutoCloseable {
         PendingRequest<R> pending;
         synchronized (lock) {
             if (closed) {
+                rejectRequest(null);
                 return failedFuture(new ApiUnavailableException("request manager is closed"));
             }
             if (pendingRequests.size() >= maximumPendingRequests) {
+                rejectRequest(null);
                 return failedFuture(
                         new ApiUnavailableException(
                                 "maximum number of pending requests reached"));
@@ -114,6 +131,8 @@ public final class PendingRequestManager implements AutoCloseable {
             UUID correlationId = nextCorrelationId();
             pending = new PendingRequest<>(correlationId, responseType, target, result);
             pendingRequests.put(correlationId, pending);
+            diagnostics.increment(TelemetryCounter.REQUESTS_STARTED);
+            diagnostics.setGauge(TelemetryGauge.PENDING_REQUESTS, pendingRequests.size());
             try {
                 pending.timeoutTask =
                         timeoutScheduler.schedule(
@@ -122,6 +141,8 @@ public final class PendingRequestManager implements AutoCloseable {
                                 TimeUnit.NANOSECONDS);
             } catch (RuntimeException failure) {
                 pendingRequests.remove(correlationId);
+                diagnostics.setGauge(TelemetryGauge.PENDING_REQUESTS, pendingRequests.size());
+                rejectRequest(failure);
                 completionDispatcher.fail(result, failure);
                 return result;
             }
@@ -131,7 +152,9 @@ public final class PendingRequestManager implements AutoCloseable {
         result.whenComplete(
                 (ignored, failure) -> {
                     if (result.isCancelled()) {
-                        remove(captured.correlationId, captured);
+                        if (remove(captured.correlationId, captured)) {
+                            diagnostics.increment(TelemetryCounter.REQUESTS_CANCELLED);
+                        }
                     }
                 });
         if (!isPending(pending.correlationId, pending)) {
@@ -184,6 +207,7 @@ public final class PendingRequestManager implements AutoCloseable {
             closed = true;
             pending = new ArrayList<>(pendingRequests.values());
             pendingRequests.clear();
+            diagnostics.setGauge(TelemetryGauge.PENDING_REQUESTS, 0);
         }
         responseSubscription.close();
         timeoutScheduler.shutdownNow();
@@ -191,6 +215,7 @@ public final class PendingRequestManager implements AutoCloseable {
                 new ApiUnavailableException("CraftRelay node is shutting down");
         for (PendingRequest<?> request : pending) {
             request.cancelTimeout();
+            diagnostics.increment(TelemetryCounter.REQUESTS_CANCELLED);
             completionDispatcher.fail(request.result, failure);
         }
     }
@@ -210,8 +235,10 @@ public final class PendingRequestManager implements AutoCloseable {
                 return;
             }
             pendingRequests.remove(correlationId.get());
+            diagnostics.setGauge(TelemetryGauge.PENDING_REQUESTS, pendingRequests.size());
         }
         pending.cancelTimeout();
+        diagnostics.increment(TelemetryCounter.REQUESTS_COMPLETED);
         completeResponse(pending, decoded.message());
     }
 
@@ -224,6 +251,8 @@ public final class PendingRequestManager implements AutoCloseable {
         if (!remove(correlationId, pending)) {
             return;
         }
+        diagnostics.increment(TelemetryCounter.REQUESTS_TIMED_OUT);
+        diagnostics.report(DiagnosticCode.REQUEST_TIMEOUT, null);
         completionDispatcher.fail(
                 pending.result,
                 new RequestTimeoutException(
@@ -233,6 +262,7 @@ public final class PendingRequestManager implements AutoCloseable {
     private void failIfPending(
             UUID correlationId, PendingRequest<?> pending, Throwable failure) {
         if (remove(correlationId, pending)) {
+            rejectRequest(failure);
             completionDispatcher.fail(
                     pending.result, AsyncFailures.unwrap(failure));
         }
@@ -243,6 +273,7 @@ public final class PendingRequestManager implements AutoCloseable {
             if (!pendingRequests.remove(correlationId, expected)) {
                 return false;
             }
+            diagnostics.setGauge(TelemetryGauge.PENDING_REQUESTS, pendingRequests.size());
         }
         expected.cancelTimeout();
         return true;
@@ -271,6 +302,10 @@ public final class PendingRequestManager implements AutoCloseable {
         } catch (IllegalStateException closedDispatcher) {
             return CompletableFuture.failedFuture(failure);
         }
+    }
+
+    private void rejectRequest(Throwable failure) {
+        diagnostics.increment(TelemetryCounter.REQUESTS_REJECTED);
     }
 
     private static boolean sourceMatches(NetworkTarget target, String sourceInstance) {

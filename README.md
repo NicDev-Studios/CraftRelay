@@ -30,6 +30,9 @@ On first startup, each plugin creates `config.yml` and stops until
 ID. All nodes in one network must use the same Redis connection and
 messaging/presence prefix.
 
+The strict configuration starts with `config-version: 1`. Unsupported schema
+versions and unknown fields are rejected rather than silently ignored.
+
 Paper exposes `CraftRelayApi` through the Bukkit services manager. Velocity
 plugins resolve the platform-neutral `CraftRelayProvider` from their declared
 CraftRelay dependency and can additionally listen for `CraftRelayReadyEvent`.

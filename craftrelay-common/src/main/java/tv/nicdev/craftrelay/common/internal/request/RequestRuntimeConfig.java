@@ -22,13 +22,19 @@ package tv.nicdev.craftrelay.common.internal.request;
  */
 public record RequestRuntimeConfig(int maximumPendingRequests) {
 
+    /** Largest supported number of pending requests. */
+    public static final int MAXIMUM_PENDING_REQUESTS = 65_536;
+
     /** Default maximum number of requests awaiting responses. */
     public static final int DEFAULT_MAXIMUM_PENDING_REQUESTS = 4_096;
 
     /** Creates validated request settings. */
     public RequestRuntimeConfig {
-        if (maximumPendingRequests <= 0) {
-            throw new IllegalArgumentException("maximumPendingRequests must be positive");
+        if (maximumPendingRequests <= 0
+                || maximumPendingRequests > MAXIMUM_PENDING_REQUESTS) {
+            throw new IllegalArgumentException(
+                    "maximumPendingRequests must be between 1 and "
+                            + MAXIMUM_PENDING_REQUESTS);
         }
     }
 

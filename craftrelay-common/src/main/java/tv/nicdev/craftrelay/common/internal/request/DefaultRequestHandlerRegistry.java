@@ -29,19 +29,21 @@ import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.FutureCompletionDispatcher;
 import tv.nicdev.craftrelay.common.internal.concurrent.ListenerDispatcher;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticCode;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
+import tv.nicdev.craftrelay.common.internal.observability.TelemetryGauge;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingCapacityConfig;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 
 final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
 
-    private static final System.Logger LOGGER =
-            System.getLogger(DefaultRequestHandlerRegistry.class.getName());
-
     private final Object lock = new Object();
     private final MessagingRuntime runtime;
     private final FutureCompletionDispatcher completionDispatcher;
-    private final ListenerDispatcher handlerDispatcher =
-            new ListenerDispatcher("craftrelay-request-handler-");
+    private final ListenerDispatcher handlerDispatcher;
+    private final NodeDiagnostics diagnostics;
+    private final MessagingCapacityConfig capacities;
     private final Map<Class<? extends NetworkMessage>, HandlerRegistration> registrations =
             new HashMap<>();
     private final Subscription requestSubscription;
@@ -51,8 +53,24 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
     DefaultRequestHandlerRegistry(
             MessagingRuntime runtime,
             FutureCompletionDispatcher completionDispatcher) {
+        this(
+                runtime,
+                completionDispatcher,
+                new NodeDiagnostics(),
+                MessagingCapacityConfig.defaults());
+    }
+
+    DefaultRequestHandlerRegistry(
+            MessagingRuntime runtime,
+            FutureCompletionDispatcher completionDispatcher,
+            NodeDiagnostics diagnostics,
+            MessagingCapacityConfig capacities) {
         this.runtime = runtime;
         this.completionDispatcher = completionDispatcher;
+        this.diagnostics = diagnostics;
+        this.capacities = capacities;
+        handlerDispatcher =
+                new ListenerDispatcher("craftrelay-request-handler-", diagnostics);
         requestSubscription = runtime.subscribeDecoded(this::acceptRequest);
     }
 
@@ -90,6 +108,7 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
             registration = createRegistration(
                     requestType, handler, responsePublisher);
             registrations.put(requestType, registration);
+            diagnostics.setGauge(TelemetryGauge.REQUEST_HANDLERS, registrations.size());
         }
         HandlerRegistration captured = registration;
         return Subscription.create(() -> remove(requestType, captured));
@@ -105,6 +124,7 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
             closed = true;
             removed = new ArrayList<>(registrations.values());
             registrations.clear();
+            diagnostics.setGauge(TelemetryGauge.REQUEST_HANDLERS, 0);
         }
         requestSubscription.close();
         removed.forEach(HandlerRegistration::close);
@@ -134,15 +154,15 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
                     ResponsePublisher<R> responsePublisher) {
         ListenerDispatcher.DispatchLane<DecodedMessage> lane =
                 handlerDispatcher.register(
-                        ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
+                        capacities.dispatchQueueCapacity(),
                         decoded ->
                                 invokeHandler(
                                         requestType,
                                         handler,
                                         responsePublisher,
                                         decoded),
-                        failure -> logHandlerFailure(requestType, failure),
-                        () -> logOverflow(requestType));
+                        failure -> diagnostics.report(DiagnosticCode.HANDLER_FAILED, failure),
+                        () -> {});
         return new HandlerRegistration(lane);
     }
 
@@ -178,18 +198,18 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
             R response,
             Throwable failure) {
         if (failure != null) {
-            logHandlerFailure(requestType, AsyncFailures.unwrap(failure));
+            diagnostics.report(DiagnosticCode.HANDLER_FAILED, AsyncFailures.unwrap(failure));
             return;
         }
         if (response == null) {
-            logHandlerFailure(
-                    requestType,
+            diagnostics.report(
+                    DiagnosticCode.HANDLER_FAILED,
                     new NullPointerException("request handler completed with null"));
             return;
         }
         if (response.getClass() == requestType) {
-            logHandlerFailure(
-                    requestType,
+            diagnostics.report(
+                    DiagnosticCode.HANDLER_FAILED,
                     new IllegalArgumentException(
                             "request and response must use different message types"));
             return;
@@ -207,7 +227,7 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
                             decoded.sourceInstance(), response, correlationId),
                     "responsePublisher.publish()");
         } catch (RuntimeException publishFailure) {
-            logHandlerFailure(requestType, publishFailure);
+            diagnostics.report(DiagnosticCode.HANDLER_FAILED, publishFailure);
             return;
         }
         publish.whenComplete(
@@ -215,8 +235,8 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
                     if (publishFailure != null) {
                         completionDispatcher.execute(
                                 () ->
-                                        logHandlerFailure(
-                                                requestType,
+                                        diagnostics.report(
+                                                DiagnosticCode.HANDLER_FAILED,
                                                 AsyncFailures.unwrap(publishFailure)));
                     }
                 });
@@ -227,25 +247,9 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
             HandlerRegistration expected) {
         synchronized (lock) {
             registrations.remove(requestType, expected);
+            diagnostics.setGauge(TelemetryGauge.REQUEST_HANDLERS, registrations.size());
         }
         expected.closeAfterDrain();
-    }
-
-    private static void logHandlerFailure(
-            Class<? extends NetworkMessage> requestType, Throwable failure) {
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                "Request handler {0} failed: {1}",
-                requestType.getName(),
-                failure.getMessage());
-    }
-
-    private static void logOverflow(Class<? extends NetworkMessage> requestType) {
-        LOGGER.log(
-                System.Logger.Level.WARNING,
-                "Dropping request for slow handler {0}; queue limit is {1}",
-                requestType.getName(),
-                ListenerDispatcher.DEFAULT_QUEUE_CAPACITY);
     }
 
     private record HandlerRegistration(

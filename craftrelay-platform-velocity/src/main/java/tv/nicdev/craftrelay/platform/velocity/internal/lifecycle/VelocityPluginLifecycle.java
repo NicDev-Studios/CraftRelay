@@ -31,6 +31,7 @@ import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.common.internal.CraftRelayStartupBanner;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.node.CraftRelayNode;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticEvent;
 import tv.nicdev.craftrelay.platform.velocity.CraftRelayReadyEvent;
 import tv.nicdev.craftrelay.platform.velocity.internal.messaging.PlayerConnectRequestListener;
 import tv.nicdev.craftrelay.platform.velocity.internal.player.LocalPlayerSessions;
@@ -93,19 +94,21 @@ public final class VelocityPluginLifecycle {
                         if (current != null) {
                             current.handleOwnershipLoss(session);
                         }
-                    });
+                    },
+                    this::reportDiagnostic);
             VelocityPlayerPresenceListener listener = new VelocityPlayerPresenceListener(
                     plugin,
                     server,
                     node.playerPresence(),
                     sessions,
                     settings.loginUnavailableMessage(),
-                    settings.duplicateSessionMessage());
+                    settings.duplicateSessionMessage(),
+                    logger);
             presenceListener.set(listener);
             server.getEventManager().register(plugin, listener);
 
             PlayerConnectRequestListener connectListener =
-                    new PlayerConnectRequestListener(plugin, server, sessions);
+                    new PlayerConnectRequestListener(plugin, server, sessions, logger);
             startup = node.start().thenCompose(
                     ignored -> publishApiReady(node, connectListener));
         } catch (Exception failure) {
@@ -116,7 +119,9 @@ public final class VelocityPluginLifecycle {
             if (failure == null) {
                 logger.info("CraftRelay is available on Velocity");
             } else {
-                logger.error("CraftRelay failed to start", AsyncFailures.unwrap(failure));
+                logger.error(
+                        "CraftRelay failed to start ({})",
+                        AsyncFailures.unwrap(failure).getClass().getName());
                 closeAfterFailedStart();
             }
         });
@@ -214,6 +219,14 @@ public final class VelocityPluginLifecycle {
             } else {
                 logger.warn("Could not schedule Velocity lifecycle cleanup", failure);
             }
+        }
+    }
+
+    private void reportDiagnostic(DiagnosticEvent event) {
+        switch (event.code().severity()) {
+            case INFO -> logger.info(event.logMessage());
+            case WARNING -> logger.warn(event.logMessage());
+            case ERROR -> logger.error(event.logMessage());
         }
     }
 }

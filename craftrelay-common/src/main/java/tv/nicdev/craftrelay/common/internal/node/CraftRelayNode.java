@@ -18,6 +18,7 @@ package tv.nicdev.craftrelay.common.internal.node;
 import java.util.concurrent.CompletableFuture;
 import tv.nicdev.craftrelay.api.CraftRelayApi;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
+import tv.nicdev.craftrelay.common.internal.observability.DiagnosticsSnapshot;
 import tv.nicdev.craftrelay.common.internal.request.RequestHandlerRegistry;
 
 /**
@@ -52,6 +53,13 @@ public interface CraftRelayNode {
      * @return player presence
      */
     PlayerPresence playerPresence();
+
+    /**
+     * Returns an immutable internal operational snapshot.
+     *
+     * @return current diagnostics
+     */
+    DiagnosticsSnapshot diagnostics();
 
     /**
      * Stops the node and all owned resources.

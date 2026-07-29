@@ -21,8 +21,10 @@ import io.lettuce.core.RedisURI;
 import io.lettuce.core.TimeoutOptions;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import tv.nicdev.craftrelay.common.internal.observability.NodeDiagnostics;
 import tv.nicdev.craftrelay.common.internal.presence.InstancePresenceConfig;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresenceConfig;
+import tv.nicdev.craftrelay.common.internal.runtime.MessagingCapacityConfig;
 
 /**
  * Shared Lettuce client and event-loop owner for one CraftRelay node.
@@ -36,6 +38,8 @@ public final class LettuceRedisBackend {
     private final Object lock = new Object();
     private final RedisClient client;
     private final RedisURI redisUri;
+    private final NodeDiagnostics diagnostics;
+    private final int dispatchQueueCapacity;
 
     private boolean transportCreated;
     private boolean storeCreated;
@@ -43,7 +47,24 @@ public final class LettuceRedisBackend {
 
     /** Creates an unopened shared backend. */
     public LettuceRedisBackend(RedisTransportConfig config) {
+        this(
+                config,
+                new NodeDiagnostics(),
+                MessagingCapacityConfig.defaults().dispatchQueueCapacity());
+    }
+
+    /** Creates an unopened shared backend with node diagnostics and bounded dispatch settings. */
+    public LettuceRedisBackend(
+            RedisTransportConfig config,
+            NodeDiagnostics diagnostics,
+            int dispatchQueueCapacity) {
         Objects.requireNonNull(config, "config");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics");
+        if (dispatchQueueCapacity <= 0
+                || dispatchQueueCapacity > MessagingCapacityConfig.MAXIMUM_CONFIGURED_CAPACITY) {
+            throw new IllegalArgumentException("dispatchQueueCapacity is out of range");
+        }
+        this.dispatchQueueCapacity = dispatchQueueCapacity;
         redisUri = createRedisUri(config);
         client = RedisClient.create();
         client.setOptions(ClientOptions.builder()
@@ -61,7 +82,8 @@ public final class LettuceRedisBackend {
                 throw new IllegalStateException("Redis transport already created");
             }
             transportCreated = true;
-            return new LettuceRedisTransport(this, false);
+            return new LettuceRedisTransport(
+                    this, false, diagnostics, dispatchQueueCapacity);
         }
     }
 
@@ -78,7 +100,8 @@ public final class LettuceRedisBackend {
                     this,
                     Objects.requireNonNull(instanceConfig, "instanceConfig"),
                     Objects.requireNonNull(playerConfig, "playerConfig"),
-                    true);
+                    true,
+                    diagnostics);
         }
     }
 

@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 
 class ListenerDispatcherTest {
@@ -155,6 +156,52 @@ class ListenerDispatcherTest {
         }
     }
 
+    @Test
+    void closeAfterDrainRejectsNewWorkAndFinishesAcceptedWorkInOrder()
+            throws InterruptedException {
+        ListenerDispatcher dispatcher =
+                new ListenerDispatcher("dispatcher-drain-test-");
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch acceptedDelivered = new CountDownLatch(2);
+        List<Integer> values = new CopyOnWriteArrayList<>();
+        try {
+            ListenerDispatcher.DispatchLane<Integer> lane = dispatcher.register(
+                    4,
+                    value -> {
+                        values.add(value);
+                        firstStarted.countDown();
+                        if (value == 1) {
+                            awaitLatch(releaseFirst);
+                        }
+                        acceptedDelivered.countDown();
+                    },
+                    failure -> {
+                        throw new AssertionError(failure);
+                    },
+                    () -> {
+                        throw new AssertionError("unexpected overflow");
+                    });
+
+            assertTrue(lane.dispatch(1));
+            assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+            assertTrue(lane.dispatch(2));
+            lane.closeAfterDrain();
+
+            assertFalse(lane.dispatch(3));
+            releaseFirst.countDown();
+            assertTrue(acceptedDelivered.await(5, TimeUnit.SECONDS));
+            assertEquals(List.of(1, 2), values);
+            awaitLaneCount(dispatcher, 0);
+
+            lane.closeAfterDrain();
+            lane.close();
+        } finally {
+            releaseFirst.countDown();
+            dispatcher.close();
+        }
+    }
+
     private static void awaitLatch(CountDownLatch latch) {
         try {
             latch.await(10, TimeUnit.SECONDS);
@@ -164,11 +211,22 @@ class ListenerDispatcherTest {
     }
 
     private static void awaitSize(List<?> values, int expected) throws InterruptedException {
+        awaitCondition(() -> values.size() >= expected);
+        assertEquals(expected, values.size());
+    }
+
+    private static void awaitLaneCount(
+            ListenerDispatcher dispatcher, int expected) throws InterruptedException {
+        awaitCondition(() -> dispatcher.registeredLaneCount() == expected);
+        assertEquals(expected, dispatcher.registeredLaneCount());
+    }
+
+    private static void awaitCondition(BooleanSupplier condition)
+            throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (values.size() < expected && System.nanoTime() < deadline) {
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
             CountDownLatch delay = new CountDownLatch(1);
             delay.await(10, TimeUnit.MILLISECONDS);
         }
-        assertEquals(expected, values.size());
     }
 }

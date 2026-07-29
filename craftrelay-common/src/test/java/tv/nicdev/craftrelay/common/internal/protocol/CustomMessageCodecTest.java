@@ -97,7 +97,7 @@ class CustomMessageCodecTest {
     }
 
     @Test
-    void acceptsLegacyProtocolOneEnvelopeWithoutPayloadVersion() {
+    void rejectsEnvelopeWithoutPayloadVersion() {
         JacksonMessageCodec codec = codec();
         byte[] current =
                 codec.encode(
@@ -109,9 +109,9 @@ class CustomMessageCodecTest {
                 new String(current, StandardCharsets.UTF_8)
                         .replace("\"payloadVersion\":1,", "");
 
-        assertInstanceOf(
-                tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage.class,
-                codec.decode(legacy.getBytes(StandardCharsets.UTF_8)).message());
+        assertThrows(
+                ProtocolException.class,
+                () -> codec.decode(legacy.getBytes(StandardCharsets.UTF_8)));
     }
 
     @Test

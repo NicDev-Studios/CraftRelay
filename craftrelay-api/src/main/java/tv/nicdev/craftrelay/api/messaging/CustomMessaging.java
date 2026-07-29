@@ -37,7 +37,7 @@ public interface CustomMessaging {
      * @throws IllegalArgumentException if the identifier, version, or class is already registered
      * @throws ApiUnavailableException if the local API is not available
      */
-    <M extends NetworkMessage> Subscription register(
+    <M extends NetworkMessage> MessageRegistration<M> register(
             MessageType<M> type, MessagePayloadCodec<M> codec);
 
     /**
@@ -46,18 +46,18 @@ public interface CustomMessaging {
      * <p>The response is automatically correlated and sent to the requesting instance. Both types
      * must already be registered locally.
      *
-     * @param requestType registered request type
-     * @param responseType registered, different response type
+     * @param request active request-type registration from this API
+     * @param response active, different response-type registration from this API
      * @param handler asynchronous handler
      * @param <Q> request type
      * @param <R> response type
      * @return idempotently closeable handler registration
-     * @throws IllegalArgumentException for unregistered types, equal request/response classes, or
-     *     an existing handler
+     * @throws IllegalArgumentException for foreign or closed registrations, equal
+     *     request/response classes, or an existing handler
      * @throws ApiUnavailableException if the local API is not available
      */
     <Q extends NetworkMessage, R extends NetworkMessage> Subscription handle(
-            MessageType<Q> requestType,
-            MessageType<R> responseType,
+            MessageRegistration<Q> request,
+            MessageRegistration<R> response,
             RequestHandler<Q, R> handler);
 }

@@ -311,6 +311,57 @@ class DefaultMessagingRuntimeTest {
     }
 
     @Test
+    void reregisteredTypeUsesAnIndependentCodecGeneration() {
+        TestNetworkTransport transport = new TestNetworkTransport();
+        MessagingRuntime runtime =
+                runtime(transport, NetworkInstanceType.SERVER, Optional.empty());
+        CountDownLatch oldStarted = new CountDownLatch(1);
+        CountDownLatch releaseOld = new CountDownLatch(1);
+        AtomicReference<Thread> oldCodecThread = new AtomicReference<>();
+        MessageType<SlowMessage> type =
+                MessageType.of("example", "generation", 1, SlowMessage.class);
+        runtime.start().join();
+        RuntimeMessageRegistration<SlowMessage> oldRegistration =
+                runtime.registerMessageType(
+                        type,
+                        blockingEncodeCodec(
+                                oldStarted,
+                                releaseOld,
+                                oldCodecThread,
+                                "{\"generation\":\"old\"}"));
+
+        CompletableFuture<Void> oldPublish =
+                runtime.publish(NetworkTargets.allInstances(), new SlowMessage());
+        try {
+            assertTrue(await(oldStarted));
+            oldRegistration.close();
+            RuntimeMessageRegistration<SlowMessage> newRegistration =
+                    runtime.registerMessageType(
+                            type,
+                            constantSlowCodec("{\"generation\":\"new\"}"));
+
+            runtime.publish(NetworkTargets.allInstances(), new SlowMessage())
+                    .orTimeout(2, TimeUnit.SECONDS)
+                    .join();
+
+            assertEquals(1, transport.publishedPayloadCount());
+            assertTrue(new String(
+                            transport.publishedPayload(0), StandardCharsets.UTF_8)
+                    .contains("\"generation\":\"new\""));
+            assertTrue(oldCodecThread.get().isVirtual());
+            newRegistration.close();
+        } finally {
+            releaseOld.countDown();
+            oldPublish.orTimeout(2, TimeUnit.SECONDS).join();
+            assertEquals(2, transport.publishedPayloadCount());
+            assertTrue(new String(
+                            transport.publishedPayload(1), StandardCharsets.UTF_8)
+                    .contains("\"generation\":\"old\""));
+            runtime.close().join();
+        }
+    }
+
+    @Test
     void slowCustomDecoderDoesNotBlockAnotherMessageType() throws Exception {
         TestNetworkTransport transport = new TestNetworkTransport();
         MessagingRuntime runtime =
@@ -528,11 +579,34 @@ class DefaultMessagingRuntimeTest {
             CountDownLatch started,
             CountDownLatch release,
             AtomicReference<Thread> thread) {
+        return blockingEncodeCodec(started, release, thread, new String(json(), StandardCharsets.UTF_8));
+    }
+
+    private static MessagePayloadCodec<SlowMessage> blockingEncodeCodec(
+            CountDownLatch started,
+            CountDownLatch release,
+            AtomicReference<Thread> thread,
+            String encodedJson) {
         return new MessagePayloadCodec<>() {
             @Override
             public byte[] encode(SlowMessage message) {
                 awaitCodec(started, release, thread);
-                return json();
+                return encodedJson.getBytes(StandardCharsets.UTF_8);
+            }
+
+            @Override
+            public SlowMessage decode(byte[] payload) {
+                return new SlowMessage();
+            }
+        };
+    }
+
+    private static MessagePayloadCodec<SlowMessage> constantSlowCodec(
+            String encodedJson) {
+        return new MessagePayloadCodec<>() {
+            @Override
+            public byte[] encode(SlowMessage message) {
+                return encodedJson.getBytes(StandardCharsets.UTF_8);
             }
 
             @Override

@@ -17,7 +17,6 @@ package tv.nicdev.craftrelay.common.internal.protocol;
 
 import java.util.Optional;
 import java.util.UUID;
-import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
 import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.NetworkMessage;
@@ -37,11 +36,37 @@ public interface MessageCodec {
      * @param correlationId optional request correlation ID
      * @return encoded envelope
      */
-    byte[] encode(
+    default byte[] encode(
+            String sourceInstance,
+            NetworkTarget target,
+            NetworkMessage message,
+            Optional<UUID> correlationId) {
+        return encode(prepare(sourceInstance, target, message, correlationId));
+    }
+
+    /**
+     * Captures the exact active codec binding and immutable outbound metadata without invoking a
+     * payload codec.
+     */
+    PreparedOutboundMessage prepare(
             String sourceInstance,
             NetworkTarget target,
             NetworkMessage message,
             Optional<UUID> correlationId);
+
+    /**
+     * Captures outbound metadata using an exact registration snapshot, including after the
+     * registration stopped accepting new work.
+     */
+    <M extends NetworkMessage> PreparedOutboundMessage prepare(
+            CodecRegistration<M> registration,
+            String sourceInstance,
+            NetworkTarget target,
+            M message,
+            Optional<UUID> correlationId);
+
+    /** Encodes one prepared outbound message using its captured codec binding. */
+    byte[] encode(PreparedOutboundMessage prepared);
 
     /**
      * Decodes and validates a wire envelope.
@@ -70,12 +95,12 @@ public interface MessageCodec {
     DecodedMessage decode(PreparedMessage prepared);
 
     /** Registers one explicit custom message codec. */
-    <M extends NetworkMessage> Subscription register(
+    <M extends NetworkMessage> CodecRegistration<M> register(
             MessageType<M> type, MessagePayloadCodec<M> payloadCodec);
 
     /** Returns whether the exact custom type is currently registered. */
     boolean isRegistered(MessageType<?> type);
 
-    /** Removes every custom registration while preserving built-in message types. */
-    void closeCustomRegistrations();
+    /** Returns whether the exact binding generation is still active. */
+    boolean isActive(MessageBindingKey bindingKey);
 }

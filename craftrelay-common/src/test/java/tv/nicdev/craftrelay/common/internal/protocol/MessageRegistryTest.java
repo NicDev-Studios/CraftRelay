@@ -25,7 +25,6 @@ import java.util.concurrent.Executors;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 import tv.nicdev.craftrelay.api.NetworkMessage;
-import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.exception.InvalidMessageException;
 import tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage;
 import tv.nicdev.craftrelay.api.message.PlayerLocationRequest;
@@ -102,7 +101,8 @@ class MessageRegistryTest {
         MessageType<CustomV2> second =
                 MessageType.of("example", "custom", 2, CustomV2.class);
 
-        Subscription firstRegistration = registry.registerCustom(first, codec(CustomV1::new));
+        CodecRegistration<CustomV1> firstRegistration =
+                registry.registerCustom(first, codec(CustomV1::new));
         registry.registerCustom(second, codec(CustomV2::new));
 
         assertEquals(CustomV1.class, registry.bindingFor("example:custom", 1).messageClass());
@@ -128,11 +128,11 @@ class MessageRegistryTest {
     @Test
     void closingCustomRegistrationsPreservesBuiltIns() {
         MessageRegistry registry = MessageRegistry.withStandardMessages();
-        registry.registerCustom(
+        CodecRegistration<CustomV1> registration = registry.registerCustom(
                 MessageType.of("example", "custom", 1, CustomV1.class),
                 codec(CustomV1::new));
 
-        registry.closeCustomRegistrations();
+        registration.close();
 
         assertEquals(
                 GlobalBroadcastMessage.class,

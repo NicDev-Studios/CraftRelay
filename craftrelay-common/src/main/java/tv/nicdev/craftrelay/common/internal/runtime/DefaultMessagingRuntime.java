@@ -26,6 +26,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
@@ -34,8 +35,11 @@ import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.concurrent.AsyncFailures;
 import tv.nicdev.craftrelay.common.internal.concurrent.ListenerDispatcher;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
+import tv.nicdev.craftrelay.common.internal.protocol.CodecRegistration;
+import tv.nicdev.craftrelay.common.internal.protocol.MessageBindingKey;
 import tv.nicdev.craftrelay.common.internal.protocol.MessageCodec;
 import tv.nicdev.craftrelay.common.internal.protocol.PreparedMessage;
+import tv.nicdev.craftrelay.common.internal.protocol.PreparedOutboundMessage;
 import tv.nicdev.craftrelay.common.transport.NetworkTransport;
 
 final class DefaultMessagingRuntime implements MessagingRuntime {
@@ -54,11 +58,13 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     private final Map<Class<? extends NetworkMessage>, List<RuntimeRegistration>>
             typedRegistrations = new HashMap<>();
     private final List<RuntimeRegistration> metadataRegistrations = new ArrayList<>();
-    private final Map<Class<? extends NetworkMessage>,
-                    ListenerDispatcher.DispatchLane<PublishOperation>>
+    private final Map<MessageBindingKey, ListenerDispatcher.DispatchLane<PublishOperation>>
             publishLanes = new HashMap<>();
-    private final Map<String, ListenerDispatcher.DispatchLane<PreparedMessage>> decodeLanes =
+    private final Map<MessageBindingKey, ListenerDispatcher.DispatchLane<PreparedMessage>>
+            decodeLanes =
             new HashMap<>();
+    private final Map<MessageBindingKey, DefaultRuntimeMessageRegistration<?>>
+            customRegistrations = new HashMap<>();
     private final Set<CompletableFuture<Void>> activePublishes =
             ConcurrentHashMap.newKeySet();
 
@@ -126,30 +132,37 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(message, "message");
         Objects.requireNonNull(correlationId, "correlationId");
-        CompletableFuture<Void> operation = new CompletableFuture<>();
-        ListenerDispatcher.DispatchLane<PublishOperation> lane;
-        synchronized (lifecycleLock) {
-            if (state != MessagingRuntimeState.RUNNING) {
-                return failedFuture("messaging runtime is not running");
-            }
-            try {
-                lane = publishLanes.computeIfAbsent(
-                        message.getClass(), this::createPublishLane);
-            } catch (RuntimeException failure) {
-                return CompletableFuture.failedFuture(failure);
-            }
-            activePublishes.add(operation);
+        return prepareAndPublish(
+                () -> codec.prepare(
+                        identity.instanceId(), target, message, correlationId));
+    }
+
+    @Override
+    public <M extends NetworkMessage> CompletableFuture<Void> publish(
+            RuntimeMessageRegistration<M> registration,
+            NetworkTarget target,
+            M message,
+            Optional<UUID> correlationId) {
+        Objects.requireNonNull(registration, "registration");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(message, "message");
+        Objects.requireNonNull(correlationId, "correlationId");
+        if (!(registration instanceof DefaultRuntimeMessageRegistration<?> candidate)
+                || candidate.owner() != this) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException(
+                            "message registration belongs to another runtime"));
         }
-        operation.whenComplete((ignored, failure) -> activePublishes.remove(operation));
-        PublishOperation publication =
-                new PublishOperation(target, message, correlationId, operation);
-        if (!lane.dispatch(publication)) {
-            operation.completeExceptionally(
-                    new IllegalStateException(
-                            "message codec queue is full or closed for "
-                                    + message.getClass().getName()));
-        }
-        return operation;
+        @SuppressWarnings("unchecked")
+        DefaultRuntimeMessageRegistration<M> owned =
+                (DefaultRuntimeMessageRegistration<M>) candidate;
+        return prepareAndPublish(
+                () -> codec.prepare(
+                        owned.codecRegistration(),
+                        identity.instanceId(),
+                        target,
+                        message,
+                        correlationId));
     }
 
     @Override
@@ -184,7 +197,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     }
 
     @Override
-    public <M extends NetworkMessage> Subscription registerMessageType(
+    public <M extends NetworkMessage> RuntimeMessageRegistration<M> registerMessageType(
             MessageType<M> type, MessagePayloadCodec<M> payloadCodec) {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(payloadCodec, "payloadCodec");
@@ -192,7 +205,11 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             if (state != MessagingRuntimeState.RUNNING) {
                 throw new IllegalStateException("messaging runtime is not running");
             }
-            return codec.register(type, payloadCodec);
+            CodecRegistration<M> codecRegistration = codec.register(type, payloadCodec);
+            DefaultRuntimeMessageRegistration<M> registration =
+                    new DefaultRuntimeMessageRegistration<>(this, codecRegistration);
+            customRegistrations.put(registration.bindingKey(), registration);
+            return registration;
         }
     }
 
@@ -235,7 +252,9 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
             metadataRegistrations.clear();
             publishLanes.clear();
             decodeLanes.clear();
-            codec.closeCustomRegistrations();
+            customRegistrations.values()
+                    .forEach(registration -> registration.codecRegistration().close());
+            customRegistrations.clear();
             publications = List.copyOf(activePublishes);
             activePublishes.clear();
         }
@@ -349,14 +368,15 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         }
         ListenerDispatcher.DispatchLane<PreparedMessage> lane;
         synchronized (lifecycleLock) {
-            if (state != MessagingRuntimeState.RUNNING) {
+            if (state != MessagingRuntimeState.RUNNING
+                    || !codec.isActive(prepared.bindingKey())) {
                 return;
             }
             lane = decodeLanes.computeIfAbsent(
-                    prepared.dispatchKey(), this::createDecodeLane);
-        }
-        if (!lane.dispatch(prepared)) {
-            logOverflow("codec " + prepared.dispatchKey());
+                    prepared.bindingKey(), this::createDecodeLane);
+            if (!lane.dispatch(prepared)) {
+                logOverflow("codec " + prepared.bindingKey().diagnosticName());
+            }
         }
     }
 
@@ -391,21 +411,25 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     }
 
     private ListenerDispatcher.DispatchLane<PublishOperation> createPublishLane(
-            Class<? extends NetworkMessage> messageType) {
+            MessageBindingKey bindingKey) {
         return listenerDispatcher.register(
                 ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
                 this::encodeAndPublish,
-                failure -> logListenerFailure("codec " + messageType.getName(), failure),
-                () -> logOverflow("codec " + messageType.getName()));
+                failure ->
+                        logListenerFailure(
+                                "codec " + bindingKey.diagnosticName(), failure),
+                () -> logOverflow("codec " + bindingKey.diagnosticName()));
     }
 
     private ListenerDispatcher.DispatchLane<PreparedMessage> createDecodeLane(
-            String dispatchKey) {
+            MessageBindingKey bindingKey) {
         return listenerDispatcher.register(
                 ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
                 this::decodeAndDeliver,
-                failure -> logListenerFailure("codec " + dispatchKey, failure),
-                () -> logOverflow("codec " + dispatchKey));
+                failure ->
+                        logListenerFailure(
+                                "codec " + bindingKey.diagnosticName(), failure),
+                () -> logOverflow("codec " + bindingKey.diagnosticName()));
     }
 
     private void encodeAndPublish(PublishOperation publication) {
@@ -416,12 +440,7 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         }
         byte[] encoded;
         try {
-            encoded =
-                    codec.encode(
-                            identity.instanceId(),
-                            publication.target(),
-                            publication.message(),
-                            publication.correlationId());
+            encoded = codec.encode(publication.prepared());
         } catch (RuntimeException failure) {
             publication.result().completeExceptionally(failure);
             return;
@@ -522,6 +541,73 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
         return CompletableFuture.failedFuture(new IllegalStateException(message));
     }
 
+    private CompletableFuture<Void> prepareAndPublish(
+            Supplier<PreparedOutboundMessage> preparation) {
+        CompletableFuture<Void> operation = new CompletableFuture<>();
+        PublishOperation publication;
+        synchronized (lifecycleLock) {
+            if (state != MessagingRuntimeState.RUNNING) {
+                return failedFuture("messaging runtime is not running");
+            }
+            PreparedOutboundMessage prepared;
+            ListenerDispatcher.DispatchLane<PublishOperation> lane;
+            try {
+                prepared = Objects.requireNonNull(
+                        preparation.get(), "prepared outbound message");
+                lane = publishLanes.computeIfAbsent(
+                        prepared.bindingKey(), this::createPublishLane);
+            } catch (RuntimeException failure) {
+                return CompletableFuture.failedFuture(failure);
+            }
+            activePublishes.add(operation);
+            publication = new PublishOperation(prepared, operation);
+            if (!lane.dispatch(publication)) {
+                operation.completeExceptionally(
+                        new IllegalStateException(
+                                "message codec queue is full or closed for "
+                                        + prepared.bindingKey().diagnosticName()));
+            }
+        }
+        operation.whenComplete(
+                (ignored, failure) ->
+                        releasePublication(publication));
+        return operation;
+    }
+
+    private void releasePublication(PublishOperation publication) {
+        activePublishes.remove(publication.result());
+        ListenerDispatcher.DispatchLane<PublishOperation> retiredLane = null;
+        synchronized (lifecycleLock) {
+            if (!codec.isActive(publication.prepared().bindingKey())) {
+                retiredLane = publishLanes.remove(
+                        publication.prepared().bindingKey());
+            }
+        }
+        if (retiredLane != null) {
+            retiredLane.closeAfterDrain();
+        }
+    }
+
+    private void unregister(DefaultRuntimeMessageRegistration<?> registration) {
+        ListenerDispatcher.DispatchLane<PublishOperation> publishLane;
+        ListenerDispatcher.DispatchLane<PreparedMessage> decodeLane;
+        synchronized (lifecycleLock) {
+            if (!customRegistrations.remove(
+                    registration.bindingKey(), registration)) {
+                return;
+            }
+            registration.codecRegistration().close();
+            publishLane = publishLanes.remove(registration.bindingKey());
+            decodeLane = decodeLanes.remove(registration.bindingKey());
+        }
+        if (publishLane != null) {
+            publishLane.closeAfterDrain();
+        }
+        if (decodeLane != null) {
+            decodeLane.closeAfterDrain();
+        }
+    }
+
     private record RuntimeRegistration(
             ListenerDispatcher.DispatchLane<DecodedMessage> dispatchLane) {
 
@@ -535,16 +621,42 @@ final class DefaultMessagingRuntime implements MessagingRuntime {
     }
 
     private record PublishOperation(
-            NetworkTarget target,
-            NetworkMessage message,
-            Optional<UUID> correlationId,
-            CompletableFuture<Void> result) {
+            PreparedOutboundMessage prepared, CompletableFuture<Void> result) {
 
         private PublishOperation {
-            Objects.requireNonNull(target, "target");
-            Objects.requireNonNull(message, "message");
-            Objects.requireNonNull(correlationId, "correlationId");
+            Objects.requireNonNull(prepared, "prepared");
             Objects.requireNonNull(result, "result");
+        }
+    }
+
+    private record DefaultRuntimeMessageRegistration<M extends NetworkMessage>(
+            DefaultMessagingRuntime owner,
+            CodecRegistration<M> codecRegistration)
+            implements RuntimeMessageRegistration<M> {
+
+        private DefaultRuntimeMessageRegistration {
+            Objects.requireNonNull(owner, "owner");
+            Objects.requireNonNull(codecRegistration, "codecRegistration");
+        }
+
+        @Override
+        public MessageType<M> type() {
+            return codecRegistration.type();
+        }
+
+        @Override
+        public MessageBindingKey bindingKey() {
+            return codecRegistration.bindingKey();
+        }
+
+        @Override
+        public boolean isClosed() {
+            return codecRegistration.isClosed();
+        }
+
+        @Override
+        public void close() {
+            owner.unregister(this);
         }
     }
 }

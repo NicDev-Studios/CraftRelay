@@ -108,6 +108,10 @@ public final class ListenerDispatcher implements AutoCloseable {
         lanes.remove(lane);
     }
 
+    int registeredLaneCount() {
+        return lanes.size();
+    }
+
     /**
      * One independently ordered listener queue.
      *
@@ -123,6 +127,7 @@ public final class ListenerDispatcher implements AutoCloseable {
         private final Queue<T> pending = new ArrayDeque<>();
 
         private boolean draining;
+        private boolean accepting = true;
         private boolean closed;
         private boolean overflowReportScheduled;
 
@@ -150,7 +155,7 @@ public final class ListenerDispatcher implements AutoCloseable {
             boolean schedule = false;
             boolean overflow = false;
             synchronized (this) {
-                if (closed) {
+                if (!accepting || closed) {
                     return false;
                 }
                 if (pending.size() >= capacity) {
@@ -179,10 +184,31 @@ public final class ListenerDispatcher implements AutoCloseable {
                 if (closed) {
                     return;
                 }
+                accepting = false;
                 closed = true;
                 pending.clear();
             }
             owner.unregister(this);
+        }
+
+        /**
+         * Stops accepting deliveries and closes this lane after all accepted work has completed.
+         */
+        public void closeAfterDrain() {
+            boolean unregister = false;
+            synchronized (this) {
+                if (!accepting || closed) {
+                    return;
+                }
+                accepting = false;
+                if (!draining && pending.isEmpty()) {
+                    closed = true;
+                    unregister = true;
+                }
+            }
+            if (unregister) {
+                owner.unregister(this);
+            }
         }
 
         private void scheduleDrain() {
@@ -197,6 +223,7 @@ public final class ListenerDispatcher implements AutoCloseable {
         }
 
         private void drain() {
+            boolean unregister = false;
             try {
                 while (true) {
                     T delivery;
@@ -223,13 +250,18 @@ public final class ListenerDispatcher implements AutoCloseable {
                 boolean reschedule;
                 synchronized (this) {
                     draining = false;
-                    reschedule = !closed && !pending.isEmpty();
+                    reschedule = accepting && !closed && !pending.isEmpty();
                     if (reschedule) {
                         draining = true;
+                    } else if (!accepting && !closed && pending.isEmpty()) {
+                        closed = true;
+                        unregister = true;
                     }
                 }
                 if (reschedule) {
                     scheduleDrain();
+                } else if (unregister) {
+                    owner.unregister(this);
                 }
             }
         }

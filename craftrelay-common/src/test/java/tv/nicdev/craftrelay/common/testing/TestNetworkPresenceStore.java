@@ -44,6 +44,7 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
     private boolean connected;
     private boolean closed;
     private boolean failNextPlayerRelease;
+    private boolean failPlayerRefreshes;
 
     public synchronized void seed(NetworkInstance instance, String token) {
         NetworkInstance value = Objects.requireNonNull(instance, "instance");
@@ -61,6 +62,10 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
 
     public synchronized void failNextPlayerRelease() {
         failNextPlayerRelease = true;
+    }
+
+    public synchronized void failPlayerRefreshes() {
+        failPlayerRefreshes = true;
     }
 
     public synchronized void forceRemove(String instanceId) {
@@ -195,6 +200,10 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
             Collection<PlayerSessionKey> sessions,
             Duration ttl) {
         requireConnected();
+        if (failPlayerRefreshes) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("simulated player refresh failure"));
+        }
         return CompletableFuture.completedFuture(sessions.stream()
                 .filter(session ->
                         owns(players.get(session.playerId()), session.sessionId(), proxyId, nodeLeaseToken))

@@ -44,7 +44,9 @@ import tv.nicdev.craftrelay.common.internal.state.PlayerStateProvider;
  * Lifecycle-safe local owner of distributed player sessions.
  *
  * <p>Mutations are serialized per player without holding locks across store I/O. Different players
- * remain independent, and refresh attempts never overlap.
+ * remain independent, and refresh attempts never overlap. A local session is evicted before its
+ * last conservatively confirmed Redis lease can expire, so an outage cannot leave an accepted
+ * player attached while another proxy claims the same UUID after TTL expiry.
  */
 public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider {
 
@@ -59,7 +61,7 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
     private final NodeLease nodeLease;
     private final Consumer<? super PlayerSessionKey> ownershipLossHandler;
     private final Clock clock;
-    private final ConcurrentHashMap<UUID, NetworkPlayer> localPlayers =
+    private final ConcurrentHashMap<UUID, LocalPlayerLease> localPlayers =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, CompletableFuture<Void>> mutationLanes =
             new ConcurrentHashMap<>();
@@ -76,6 +78,8 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
     private CompletableFuture<Void> startFuture;
     private CompletableFuture<Void> stopFuture;
     private ScheduledFuture<?> scheduledRefresh;
+    private ScheduledFuture<?> scheduledLeaseGuard;
+    private long leaseGuardDeadlineNanos = Long.MAX_VALUE;
     private CompletableFuture<Void> refreshFuture = CompletableFuture.completedFuture(null);
 
     /** Creates a registry using the system UTC clock. */
@@ -221,6 +225,11 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                 scheduledRefresh.cancel(false);
                 scheduledRefresh = null;
             }
+            if (scheduledLeaseGuard != null) {
+                scheduledLeaseGuard.cancel(false);
+                scheduledLeaseGuard = null;
+                leaseGuardDeadlineNanos = Long.MAX_VALUE;
+            }
             CompletableFuture<Void> starting = startFuture == null
                     ? CompletableFuture.completedFuture(null)
                     : startFuture.handle((ignored, failure) -> (Void) null);
@@ -264,6 +273,8 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                 sessionId,
                 now,
                 now);
+        long leaseStartNanos = System.nanoTime();
+        long safeUntilNanos = safeUntil(leaseStartNanos);
         return store.claim(candidate, nodeLease.token(), config.playerTtl())
                 .thenComposeAsync(result -> {
                     if (result.status() == PlayerMutationStatus.CONFLICT) {
@@ -276,7 +287,12 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                     }
                     NetworkPlayer claimed = result.current().orElseThrow(
                             () -> new IllegalStateException("Claim did not return a player"));
-                    localPlayers.put(playerId, claimed);
+                    if (!hasSafeWindow(safeUntilNanos)) {
+                        return releaseUnsafeClaim(claimed);
+                    }
+                    localPlayers.put(
+                            playerId, new LocalPlayerLease(claimed, safeUntilNanos));
+                    scheduleLeaseGuardIfEarlier(guardDeadline(safeUntilNanos));
                     return publishBestEffort(new PlayerConnectedMessage(claimed))
                             .thenApply(ignored -> claimed);
                 }, mutationExecutor);
@@ -284,6 +300,8 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
 
     private CompletableFuture<NetworkPlayer> updateServer(
             UUID playerId, UUID sessionId, String serverId) {
+        long leaseStartNanos = System.nanoTime();
+        long safeUntilNanos = safeUntil(leaseStartNanos);
         return store.updateServer(
                         playerId,
                         sessionId,
@@ -298,7 +316,20 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                     }
                     NetworkPlayer updated = result.current().orElseThrow(
                             () -> new IllegalStateException("Server update did not return a player"));
-                    localPlayers.put(playerId, updated);
+                    if (!hasSafeWindow(safeUntilNanos)) {
+                        loseLocalSession(new PlayerSessionKey(playerId, sessionId));
+                        return unavailable("Player session lease could not be renewed safely");
+                    }
+                    localPlayers.compute(
+                            playerId,
+                            (ignored, current) ->
+                                    current == null
+                                                    || !current.snapshot()
+                                                            .sessionId()
+                                                            .equals(sessionId)
+                                            ? current
+                                            : new LocalPlayerLease(
+                                                    updated, safeUntilNanos));
                     Optional<String> previousServer = result.previous()
                             .flatMap(NetworkPlayer::serverId);
                     return publishBestEffort(new PlayerServerSwitchMessage(
@@ -397,7 +428,9 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                 return;
             }
             List<PlayerSessionKey> sessions = localPlayers.values().stream()
-                    .map(player -> new PlayerSessionKey(player.uniqueId(), player.sessionId()))
+                    .map(lease -> new PlayerSessionKey(
+                            lease.snapshot().uniqueId(),
+                            lease.snapshot().sessionId()))
                     .toList();
             try {
                 operation = refreshBatches(sessions, 0);
@@ -409,6 +442,8 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         operation.whenCompleteAsync((ignored, failure) -> {
             if (failure != null) {
                 logFailure("Could not refresh player presence; will retry", failure);
+            } else {
+                rescheduleLeaseGuard();
             }
             scheduleRefresh();
         }, mutationExecutor);
@@ -421,6 +456,8 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         }
         int end = Math.min(offset + config.batchSize(), sessions.size());
         List<PlayerSessionKey> batch = sessions.subList(offset, end);
+        long leaseStartNanos = System.nanoTime();
+        long safeUntilNanos = safeUntil(leaseStartNanos);
         return store.refresh(
                         identity.instanceId(),
                         nodeLease.token(),
@@ -428,6 +465,17 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
                         config.playerTtl())
                 .thenComposeAsync(refreshed -> {
                     Set<PlayerSessionKey> owned = Set.copyOf(refreshed);
+                    owned.forEach(session ->
+                            localPlayers.computeIfPresent(
+                                    session.playerId(),
+                                    (ignored, current) ->
+                                            current.snapshot()
+                                                            .sessionId()
+                                                            .equals(session.sessionId())
+                                                    ? new LocalPlayerLease(
+                                                            current.snapshot(),
+                                                            safeUntilNanos)
+                                                    : current));
                     batch.stream()
                             .filter(session -> !owned.contains(session))
                             .forEach(this::loseLocalSession);
@@ -436,8 +484,9 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
     }
 
     private void loseLocalSession(PlayerSessionKey session) {
-        NetworkPlayer current = localPlayers.get(session.playerId());
-        if (current == null || !current.sessionId().equals(session.sessionId())) {
+        LocalPlayerLease current = localPlayers.get(session.playerId());
+        if (current == null
+                || !current.snapshot().sessionId().equals(session.sessionId())) {
             return;
         }
         if (localPlayers.remove(session.playerId(), current)) {
@@ -453,7 +502,112 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         localPlayers.computeIfPresent(
                 playerId,
                 (ignored, current) ->
-                        current.sessionId().equals(sessionId) ? null : current);
+                        current.snapshot().sessionId().equals(sessionId)
+                                ? null
+                                : current);
+    }
+
+    private CompletableFuture<NetworkPlayer> releaseUnsafeClaim(NetworkPlayer claimed) {
+        return store.release(
+                        claimed.uniqueId(),
+                        claimed.sessionId(),
+                        identity.instanceId(),
+                        nodeLease.token())
+                .handleAsync((ignored, failure) -> {
+                    if (failure != null) {
+                        logFailure(
+                                "Could not release player claim with insufficient lease window",
+                                failure);
+                    }
+                    return null;
+                }, mutationExecutor)
+                .thenComposeAsync(
+                        ignored -> unavailable(
+                                "Player session claim completed too close to lease expiry"),
+                        mutationExecutor);
+    }
+
+    private long safeUntil(long leaseStartNanos) {
+        long ttlNanos = config.playerTtl().toNanos();
+        return leaseStartNanos > Long.MAX_VALUE - ttlNanos
+                ? Long.MAX_VALUE
+                : leaseStartNanos + ttlNanos;
+    }
+
+    private long guardDeadline(long safeUntilNanos) {
+        long margin = config.refreshInterval().toNanos();
+        return safeUntilNanos < Long.MIN_VALUE + margin
+                ? Long.MIN_VALUE
+                : safeUntilNanos - margin;
+    }
+
+    private boolean hasSafeWindow(long safeUntilNanos) {
+        return System.nanoTime() < guardDeadline(safeUntilNanos);
+    }
+
+    private void scheduleLeaseGuardIfEarlier(long deadlineNanos) {
+        synchronized (lifecycleLock) {
+            if (state != RegistryState.RUNNING
+                    || deadlineNanos >= leaseGuardDeadlineNanos) {
+                return;
+            }
+            scheduleLeaseGuardLocked(deadlineNanos);
+        }
+    }
+
+    private void rescheduleLeaseGuard() {
+        long earliest = localPlayers.values().stream()
+                .mapToLong(lease -> guardDeadline(lease.safeUntilNanos()))
+                .min()
+                .orElse(Long.MAX_VALUE);
+        synchronized (lifecycleLock) {
+            if (state != RegistryState.RUNNING) {
+                return;
+            }
+            if (scheduledLeaseGuard != null) {
+                scheduledLeaseGuard.cancel(false);
+                scheduledLeaseGuard = null;
+            }
+            leaseGuardDeadlineNanos = Long.MAX_VALUE;
+            if (earliest != Long.MAX_VALUE) {
+                scheduleLeaseGuardLocked(earliest);
+            }
+        }
+    }
+
+    private void scheduleLeaseGuardLocked(long deadlineNanos) {
+        if (scheduledLeaseGuard != null) {
+            scheduledLeaseGuard.cancel(false);
+        }
+        leaseGuardDeadlineNanos = deadlineNanos;
+        long delay = Math.max(0L, deadlineNanos - System.nanoTime());
+        scheduledLeaseGuard = refreshExecutor.schedule(
+                this::guardPlayerLeases, delay, TimeUnit.NANOSECONDS);
+    }
+
+    private void guardPlayerLeases() {
+        synchronized (lifecycleLock) {
+            if (state != RegistryState.RUNNING) {
+                return;
+            }
+            scheduledLeaseGuard = null;
+            leaseGuardDeadlineNanos = Long.MAX_VALUE;
+        }
+
+        long now = System.nanoTime();
+        localPlayers.forEach((playerId, lease) -> {
+            if (guardDeadline(lease.safeUntilNanos()) <= now
+                    && localPlayers.remove(playerId, lease)) {
+                PlayerSessionKey session =
+                        new PlayerSessionKey(playerId, lease.snapshot().sessionId());
+                try {
+                    ownershipLossHandler.accept(session);
+                } catch (Throwable failure) {
+                    logFailure("Player lease-guard callback failed", failure);
+                }
+            }
+        });
+        rescheduleLeaseGuard();
     }
 
     private CompletableFuture<Void> cleanupStaleSessions() {
@@ -550,5 +704,12 @@ public final class PlayerRegistry implements PlayerPresence, PlayerStateProvider
         RUNNING,
         STOPPING,
         STOPPED
+    }
+
+    private record LocalPlayerLease(NetworkPlayer snapshot, long safeUntilNanos) {
+
+        private LocalPlayerLease {
+            Objects.requireNonNull(snapshot, "snapshot");
+        }
     }
 }

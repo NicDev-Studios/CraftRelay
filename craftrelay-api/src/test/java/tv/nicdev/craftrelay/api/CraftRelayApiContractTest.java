@@ -30,6 +30,10 @@ import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.api.messaging.CustomMessaging;
+import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageRegistration;
+import tv.nicdev.craftrelay.api.messaging.MessageType;
+import tv.nicdev.craftrelay.api.messaging.RequestHandler;
 
 class CraftRelayApiContractTest {
 
@@ -72,6 +76,24 @@ class CraftRelayApiContractTest {
         assertFuturePayload(instances, Collection.class);
         assertFuturePayload(player, Optional.class);
         assertEquals(CustomMessaging.class, customMessaging.getReturnType());
+    }
+
+    @Test
+    void customMessagingUsesOwnedMessageRegistrations()
+            throws NoSuchMethodException {
+        Method register =
+                CustomMessaging.class.getMethod(
+                        "register", MessageType.class, MessagePayloadCodec.class);
+        Method handle =
+                CustomMessaging.class.getMethod(
+                        "handle",
+                        MessageRegistration.class,
+                        MessageRegistration.class,
+                        RequestHandler.class);
+
+        assertEquals(MessageRegistration.class, register.getReturnType());
+        assertEquals(Subscription.class, handle.getReturnType());
+        assertTrue(AutoCloseable.class.isAssignableFrom(MessageRegistration.class));
     }
 
     private static void assertFuturePayload(Method method, Class<?> expectedPayload) {

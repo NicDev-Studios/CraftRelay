@@ -35,8 +35,8 @@ public final class PreparedMessage {
      *
      * @return dispatch key
      */
-    public String dispatchKey() {
-        return envelope.type() + "@" + envelope.payloadVersion();
+    public MessageBindingKey bindingKey() {
+        return binding.bindingKey();
     }
 
     MessageEnvelope envelope() {

@@ -59,8 +59,24 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
     @Override
     public <Q extends NetworkMessage, R extends NetworkMessage> Subscription register(
             Class<Q> requestType, RequestHandler<Q, R> handler) {
+        return register(
+                requestType,
+                handler,
+                (targetInstance, response, correlationId) ->
+                        runtime.publish(
+                                NetworkTargets.instance(targetInstance),
+                                response,
+                                java.util.Optional.of(correlationId)));
+    }
+
+    @Override
+    public <Q extends NetworkMessage, R extends NetworkMessage> Subscription register(
+            Class<Q> requestType,
+            RequestHandler<Q, R> handler,
+            ResponsePublisher<R> responsePublisher) {
         Objects.requireNonNull(requestType, "requestType");
         Objects.requireNonNull(handler, "handler");
+        Objects.requireNonNull(responsePublisher, "responsePublisher");
 
         HandlerRegistration registration;
         synchronized (lock) {
@@ -71,7 +87,8 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
                 throw new IllegalArgumentException(
                         "handler already registered for " + requestType.getName());
             }
-            registration = createRegistration(requestType, handler);
+            registration = createRegistration(
+                    requestType, handler, responsePublisher);
             registrations.put(requestType, registration);
         }
         HandlerRegistration captured = registration;
@@ -112,11 +129,18 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
 
     private <Q extends NetworkMessage, R extends NetworkMessage>
             HandlerRegistration createRegistration(
-                    Class<Q> requestType, RequestHandler<Q, R> handler) {
+                    Class<Q> requestType,
+                    RequestHandler<Q, R> handler,
+                    ResponsePublisher<R> responsePublisher) {
         ListenerDispatcher.DispatchLane<DecodedMessage> lane =
                 handlerDispatcher.register(
                         ListenerDispatcher.DEFAULT_QUEUE_CAPACITY,
-                        decoded -> invokeHandler(requestType, handler, decoded),
+                        decoded ->
+                                invokeHandler(
+                                        requestType,
+                                        handler,
+                                        responsePublisher,
+                                        decoded),
                         failure -> logHandlerFailure(requestType, failure),
                         () -> logOverflow(requestType));
         return new HandlerRegistration(lane);
@@ -125,6 +149,7 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
     private <Q extends NetworkMessage, R extends NetworkMessage> void invokeHandler(
             Class<Q> requestType,
             RequestHandler<Q, R> handler,
+            ResponsePublisher<R> responsePublisher,
             DecodedMessage decoded) {
         UUID correlationId = decoded.correlationId().orElseThrow();
         RequestContext context =
@@ -138,17 +163,19 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
                         completionDispatcher.execute(
                                 () -> completeHandler(
                                         requestType,
+                                        responsePublisher,
                                         decoded,
                                         correlationId,
                                         response,
                                         failure)));
     }
 
-    private void completeHandler(
+    private <R extends NetworkMessage> void completeHandler(
             Class<? extends NetworkMessage> requestType,
+            ResponsePublisher<R> responsePublisher,
             DecodedMessage decoded,
             UUID correlationId,
-            NetworkMessage response,
+            R response,
             Throwable failure) {
         if (failure != null) {
             logHandlerFailure(requestType, AsyncFailures.unwrap(failure));
@@ -175,13 +202,10 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
 
         CompletableFuture<Void> publish;
         try {
-            publish =
-                    Objects.requireNonNull(
-                            runtime.publish(
-                                    NetworkTargets.instance(decoded.sourceInstance()),
-                                    response,
-                                    java.util.Optional.of(correlationId)),
-                            "runtime.publish()");
+            publish = Objects.requireNonNull(
+                    responsePublisher.publish(
+                            decoded.sourceInstance(), response, correlationId),
+                    "responsePublisher.publish()");
         } catch (RuntimeException publishFailure) {
             logHandlerFailure(requestType, publishFailure);
             return;
@@ -204,7 +228,7 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
         synchronized (lock) {
             registrations.remove(requestType, expected);
         }
-        expected.close();
+        expected.closeAfterDrain();
     }
 
     private static void logHandlerFailure(
@@ -233,6 +257,10 @@ final class DefaultRequestHandlerRegistry implements RequestHandlerRegistry {
 
         private void close() {
             lane.close();
+        }
+
+        private void closeAfterDrain() {
+            lane.closeAfterDrain();
         }
     }
 }

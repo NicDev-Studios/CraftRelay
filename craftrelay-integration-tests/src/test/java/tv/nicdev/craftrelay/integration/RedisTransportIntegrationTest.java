@@ -350,6 +350,53 @@ class RedisTransportIntegrationTest {
     }
 
     @Test
+    void simultaneousPlayerClaimsAcrossProxiesHaveExactlyOneWinner() {
+        String prefix = "craftrelay-player-race-" + UUID.randomUUID();
+        InstancePresenceConfig instanceConfig = new InstancePresenceConfig(
+                prefix, Duration.ofMillis(50), Duration.ofMillis(500), 16);
+        PlayerPresenceConfig playerConfig = new PlayerPresenceConfig(
+                prefix, Duration.ofMillis(50), Duration.ofMillis(500), 16);
+        LettuceRedisPresenceStore first =
+                newPresenceStore(instanceConfig, playerConfig);
+        LettuceRedisPresenceStore second =
+                newPresenceStore(instanceConfig, playerConfig);
+        CompletableFuture.allOf(first.connect(), second.connect()).join();
+        String firstToken = UUID.randomUUID().toString();
+        String secondToken = UUID.randomUUID().toString();
+        NetworkInstance firstProxy = proxyInstance("proxy-race-1");
+        NetworkInstance secondProxy = proxyInstance("proxy-race-2");
+        assertTrue(first.claim(firstProxy, firstToken, instanceConfig.instanceTtl()).join());
+        assertTrue(second.claim(secondProxy, secondToken, instanceConfig.instanceTtl()).join());
+
+        UUID playerId = UUID.randomUUID();
+        NetworkPlayer firstCandidate =
+                player(playerId, "proxy-race-1", UUID.randomUUID());
+        NetworkPlayer secondCandidate =
+                player(playerId, "proxy-race-2", UUID.randomUUID());
+        var firstClaim =
+                first.claim(firstCandidate, firstToken, playerConfig.playerTtl());
+        var secondClaim =
+                second.claim(secondCandidate, secondToken, playerConfig.playerTtl());
+
+        CompletableFuture.allOf(firstClaim, secondClaim)
+                .orTimeout(5, TimeUnit.SECONDS)
+                .join();
+        List<PlayerMutationStatus> statuses =
+                List.of(firstClaim.join().status(), secondClaim.join().status());
+
+        assertEquals(
+                1,
+                statuses.stream()
+                        .filter(status -> status == PlayerMutationStatus.APPLIED)
+                        .count());
+        assertEquals(
+                1,
+                statuses.stream()
+                        .filter(status -> status == PlayerMutationStatus.CONFLICT)
+                        .count());
+    }
+
+    @Test
     void redisPlayerTtlAndNodeLeaseFenceOldProxyRuns() {
         String prefix = "craftrelay-player-" + UUID.randomUUID();
         InstancePresenceConfig instanceConfig = new InstancePresenceConfig(
@@ -680,15 +727,18 @@ class RedisTransportIntegrationTest {
                 MessageType.of("integration", "echo_request", 1, CustomRequest.class);
         MessageType<CustomResponse> responseType =
                 MessageType.of("integration", "echo_response", 1, CustomResponse.class);
-        for (CraftRelayNode node : List.of(proxy, server)) {
-            node.api().customMessaging().register(requestType, requestCodec());
-            node.api().customMessaging().register(responseType, responseCodec());
-        }
-        server.api()
+        var proxyRequest =
+                proxy.api().customMessaging().register(requestType, requestCodec());
+        proxy.api().customMessaging().register(responseType, responseCodec());
+        var serverRequest =
+                server.api().customMessaging().register(requestType, requestCodec());
+        var serverResponse =
+                server.api().customMessaging().register(responseType, responseCodec());
+        var serverHandler = server.api()
                 .customMessaging()
                 .handle(
-                        requestType,
-                        responseType,
+                        serverRequest,
+                        serverResponse,
                         (request, context) ->
                                 CompletableFuture.completedFuture(
                                         new CustomResponse(
@@ -723,6 +773,42 @@ class RedisTransportIntegrationTest {
                     new CustomResponse("request-" + index + "@custom-proxy"),
                     requests.get(index).join());
         }
+
+        serverRequest.close();
+        assertTrue(serverHandler.isClosed());
+        CompletionException unavailableVersion = assertThrows(
+                CompletionException.class,
+                () -> proxy.api()
+                        .request(
+                                NetworkTargets.instance("custom-server"),
+                                new CustomRequest("temporarily-unregistered"),
+                                CustomResponse.class,
+                                Duration.ofMillis(300))
+                        .join());
+        assertInstanceOf(RequestTimeoutException.class, unavailableVersion.getCause());
+
+        var replacementRequest =
+                server.api().customMessaging().register(requestType, requestCodec());
+        server.api()
+                .customMessaging()
+                .handle(
+                        replacementRequest,
+                        serverResponse,
+                        (request, context) ->
+                                CompletableFuture.completedFuture(
+                                        new CustomResponse(
+                                                "replacement@" + context.sourceInstance())));
+        assertEquals(
+                new CustomResponse("replacement@custom-proxy"),
+                proxy.api()
+                        .request(
+                                NetworkTargets.instance("custom-server"),
+                                new CustomRequest("after-reregister"),
+                                CustomResponse.class,
+                                Duration.ofSeconds(5))
+                        .orTimeout(10, TimeUnit.SECONDS)
+                        .join());
+        assertFalse(proxyRequest.isClosed());
     }
 
     @Test
@@ -1101,6 +1187,30 @@ class RedisTransportIntegrationTest {
                 now,
                 now,
                 onlinePlayerCount);
+    }
+
+    private static NetworkInstance proxyInstance(String id) {
+        Instant now = Instant.now();
+        return new NetworkInstance(
+                id,
+                NetworkInstanceType.PROXY,
+                Optional.empty(),
+                now,
+                now,
+                0);
+    }
+
+    private static NetworkPlayer player(
+            UUID playerId, String proxyId, UUID sessionId) {
+        Instant now = Instant.now();
+        return new NetworkPlayer(
+                playerId,
+                "RacePlayer",
+                proxyId,
+                Optional.empty(),
+                sessionId,
+                now,
+                now);
     }
 
     private static MessagePayloadCodec<CustomRequest> requestCodec() {

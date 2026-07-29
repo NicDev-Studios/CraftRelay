@@ -66,6 +66,16 @@ public interface MessagingRuntime {
             Optional<UUID> correlationId);
 
     /**
+     * Publishes with one exact captured registration, including work accepted before graceful
+     * unregistration.
+     */
+    <M extends NetworkMessage> CompletableFuture<Void> publish(
+            RuntimeMessageRegistration<M> registration,
+            NetworkTarget target,
+            M message,
+            Optional<UUID> correlationId);
+
+    /**
      * Registers a typed listener.
      *
      * @param messageType exact message class
@@ -85,7 +95,7 @@ public interface MessagingRuntime {
     Subscription subscribeDecoded(Consumer<? super DecodedMessage> listener);
 
     /** Registers one explicit custom message type in the local wire codec. */
-    <M extends NetworkMessage> Subscription registerMessageType(
+    <M extends NetworkMessage> RuntimeMessageRegistration<M> registerMessageType(
             MessageType<M> type, MessagePayloadCodec<M> payloadCodec);
 
     /** Returns whether the exact custom message type is currently registered. */

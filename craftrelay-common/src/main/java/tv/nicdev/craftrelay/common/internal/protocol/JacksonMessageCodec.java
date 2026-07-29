@@ -29,7 +29,6 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 import tv.nicdev.craftrelay.api.NetworkMessage;
-import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.exception.InvalidMessageException;
 import tv.nicdev.craftrelay.api.exception.ProtocolException;
 import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
@@ -46,6 +45,7 @@ final class JacksonMessageCodec implements MessageCodec {
                     "messageId",
                     "protocolVersion",
                     "type",
+                    "payloadVersion",
                     "sourceInstance",
                     "target",
                     "createdAt",
@@ -99,7 +99,7 @@ final class JacksonMessageCodec implements MessageCodec {
     }
 
     @Override
-    public byte[] encode(
+    public PreparedOutboundMessage prepare(
             String sourceInstance,
             NetworkTarget target,
             NetworkMessage message,
@@ -111,18 +111,51 @@ final class JacksonMessageCodec implements MessageCodec {
 
         MessageRegistry.Binding<? extends NetworkMessage> binding =
                 registry.bindingFor(message);
+        return preparedOutbound(
+                sourceInstance, target, message, correlationId, binding);
+    }
+
+    @Override
+    public <M extends NetworkMessage> PreparedOutboundMessage prepare(
+            CodecRegistration<M> registration,
+            String sourceInstance,
+            NetworkTarget target,
+            M message,
+            Optional<UUID> correlationId) {
+        Objects.requireNonNull(registration, "registration");
+        requireText(sourceInstance, "sourceInstance");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(message, "message");
+        Objects.requireNonNull(correlationId, "correlationId");
+        if (message.getClass() != registration.type().messageClass()) {
+            throw new InvalidMessageException(
+                    "message class does not match registration: "
+                            + message.getClass().getName());
+        }
+        return preparedOutbound(
+                sourceInstance,
+                target,
+                message,
+                correlationId,
+                registration.binding());
+    }
+
+    @Override
+    public byte[] encode(PreparedOutboundMessage prepared) {
+        Objects.requireNonNull(prepared, "prepared");
+        MessageRegistry.Binding<? extends NetworkMessage> binding = prepared.binding();
         try {
-            JsonNode payload = encodePayload(binding, message);
+            JsonNode payload = encodePayload(binding, prepared.message());
             MessageEnvelope envelope =
                     new MessageEnvelope(
-                            Objects.requireNonNull(messageIdSupplier.get(), "messageId"),
+                            prepared.messageId(),
                             PROTOCOL_VERSION,
                             binding.key().type(),
                             binding.key().payloadVersion(),
-                            sourceInstance,
-                            target,
-                            Instant.now(clock),
-                            correlationId,
+                            prepared.sourceInstance(),
+                            prepared.target(),
+                            prepared.createdAt(),
+                            prepared.correlationId(),
                             payload);
             byte[] encoded = mapper.writeValueAsBytes(toJson(envelope));
             requireAllowedSize(encoded);
@@ -134,6 +167,22 @@ final class JacksonMessageCodec implements MessageCodec {
         } catch (RuntimeException exception) {
             throw new InvalidMessageException("message could not be encoded", exception);
         }
+    }
+
+    private PreparedOutboundMessage preparedOutbound(
+            String sourceInstance,
+            NetworkTarget target,
+            NetworkMessage message,
+            Optional<UUID> correlationId,
+            MessageRegistry.Binding<? extends NetworkMessage> binding) {
+        return new PreparedOutboundMessage(
+                Objects.requireNonNull(messageIdSupplier.get(), "messageId"),
+                sourceInstance,
+                target,
+                Instant.now(clock),
+                correlationId,
+                message,
+                binding);
     }
 
     @Override
@@ -178,7 +227,7 @@ final class JacksonMessageCodec implements MessageCodec {
     }
 
     @Override
-    public <M extends NetworkMessage> Subscription register(
+    public <M extends NetworkMessage> CodecRegistration<M> register(
             MessageType<M> type, MessagePayloadCodec<M> payloadCodec) {
         return registry.registerCustom(type, payloadCodec);
     }
@@ -189,8 +238,8 @@ final class JacksonMessageCodec implements MessageCodec {
     }
 
     @Override
-    public void closeCustomRegistrations() {
-        registry.closeCustomRegistrations();
+    public boolean isActive(MessageBindingKey bindingKey) {
+        return registry.isActive(bindingKey);
     }
 
     private ObjectNode toJson(MessageEnvelope envelope) {
@@ -225,11 +274,7 @@ final class JacksonMessageCodec implements MessageCodec {
             throw new ProtocolException("unsupported protocol version: " + protocolVersion);
         }
 
-        JsonNode payloadVersionNode = root.get("payloadVersion");
-        int payloadVersion =
-                payloadVersionNode == null
-                        ? 1
-                        : requiredPositiveInteger(root, "payloadVersion");
+        int payloadVersion = requiredPositiveInteger(root, "payloadVersion");
         JsonNode correlationNode = root.get("correlationId");
         Optional<UUID> correlationId =
                 correlationNode == null || correlationNode.isNull()

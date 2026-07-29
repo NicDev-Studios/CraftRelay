@@ -16,6 +16,7 @@
 package tv.nicdev.craftrelay.common.internal.node;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -43,6 +44,7 @@ import tv.nicdev.craftrelay.api.model.NetworkInstance;
 import tv.nicdev.craftrelay.api.model.NetworkInstanceType;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
+import tv.nicdev.craftrelay.api.messaging.MessageRegistration;
 import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTargets;
 import tv.nicdev.craftrelay.common.internal.runtime.LocalInstanceIdentity;
@@ -204,8 +206,8 @@ class CraftRelayNodeTest {
         var handlerRegistration =
                 api.customMessaging()
                         .handle(
-                                requestType,
-                                responseType,
+                                requestRegistration,
+                                responseRegistration,
                                 (request, context) -> {
                                     handlerThread.complete(
                                             Thread.currentThread().isVirtual()
@@ -229,19 +231,63 @@ class CraftRelayNodeTest {
                 () ->
                         api.customMessaging()
                                 .handle(
-                                        requestType,
-                                        responseType,
+                                        requestRegistration,
+                                        responseRegistration,
                                         (request, context) ->
                                                 CompletableFuture.completedFuture(
                                                         new CustomResponse("duplicate"))));
 
-        handlerRegistration.close();
         requestRegistration.close();
+        assertTrue(requestRegistration.isClosed());
+        assertTrue(handlerRegistration.isClosed());
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        api.customMessaging()
+                                .handle(
+                                        requestRegistration,
+                                        responseRegistration,
+                                        (request, context) ->
+                                                CompletableFuture.completedFuture(
+                                                        new CustomResponse("closed"))));
         assertFutureFailure(
                 tv.nicdev.craftrelay.api.exception.InvalidMessageException.class,
                 api.publish(
                         NetworkTargets.allInstances(),
                         new CustomRequest("unregistered")));
+
+        var replacementRequest =
+                api.customMessaging().register(requestType, requestCodec());
+        requestRegistration.close();
+        assertFalse(replacementRequest.isClosed());
+        MessageRegistration<CustomResponse> foreignResponse =
+                new MessageRegistration<>() {
+                    @Override
+                    public MessageType<CustomResponse> type() {
+                        return responseType;
+                    }
+
+                    @Override
+                    public boolean isClosed() {
+                        return false;
+                    }
+
+                    @Override
+                    public void close() {
+                    }
+                };
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        api.customMessaging()
+                                .handle(
+                                        replacementRequest,
+                                        foreignResponse,
+                                        (request, context) ->
+                                                CompletableFuture.completedFuture(
+                                                        new CustomResponse("foreign"))));
+
+        replacementRequest.close();
         responseRegistration.close();
         node.close().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
         assertThrows(

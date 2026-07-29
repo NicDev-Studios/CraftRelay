@@ -24,6 +24,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
@@ -31,8 +32,10 @@ import tv.nicdev.craftrelay.api.messaging.MessagePayloadCodec;
 import tv.nicdev.craftrelay.api.messaging.MessageType;
 import tv.nicdev.craftrelay.api.target.NetworkTarget;
 import tv.nicdev.craftrelay.common.internal.protocol.DecodedMessage;
+import tv.nicdev.craftrelay.common.internal.protocol.MessageBindingKey;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntime;
 import tv.nicdev.craftrelay.common.internal.runtime.MessagingRuntimeState;
+import tv.nicdev.craftrelay.common.internal.runtime.RuntimeMessageRegistration;
 
 /**
  * Controllable metadata-aware messaging runtime for request-layer unit tests.
@@ -42,6 +45,7 @@ public final class TestMessagingRuntime implements MessagingRuntime {
     private final List<Consumer<? super DecodedMessage>> metadataListeners =
             new CopyOnWriteArrayList<>();
     private final Set<MessageType<?>> messageTypes = ConcurrentHashMap.newKeySet();
+    private final AtomicLong generations = new AtomicLong();
 
     private volatile MessagingRuntimeState state = MessagingRuntimeState.RUNNING;
     private volatile PublishHook publishHook = published -> {};
@@ -108,6 +112,16 @@ public final class TestMessagingRuntime implements MessagingRuntime {
     }
 
     @Override
+    public <M extends NetworkMessage> CompletableFuture<Void> publish(
+            RuntimeMessageRegistration<M> registration,
+            NetworkTarget target,
+            M message,
+            Optional<UUID> correlationId) {
+        Objects.requireNonNull(registration, "registration");
+        return publish(target, message, correlationId);
+    }
+
+    @Override
     public <M extends NetworkMessage> Subscription subscribe(
             Class<M> messageType, Consumer<? super M> listener) {
         Objects.requireNonNull(messageType, "messageType");
@@ -130,14 +144,20 @@ public final class TestMessagingRuntime implements MessagingRuntime {
     }
 
     @Override
-    public <M extends NetworkMessage> Subscription registerMessageType(
+    public <M extends NetworkMessage> RuntimeMessageRegistration<M> registerMessageType(
             MessageType<M> type, MessagePayloadCodec<M> payloadCodec) {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(payloadCodec, "payloadCodec");
         if (!messageTypes.add(type)) {
             throw new IllegalArgumentException("message type is already registered");
         }
-        return Subscription.create(() -> messageTypes.remove(type));
+        return new TestRuntimeMessageRegistration<>(
+                type,
+                new MessageBindingKey(
+                        type.identifier(),
+                        type.payloadVersion(),
+                        generations.incrementAndGet()),
+                Subscription.create(() -> messageTypes.remove(type)));
     }
 
     @Override
@@ -190,5 +210,28 @@ public final class TestMessagingRuntime implements MessagingRuntime {
          * @param published captured publish data
          */
         void onPublish(PublishedMessage published);
+    }
+
+    private record TestRuntimeMessageRegistration<M extends NetworkMessage>(
+            MessageType<M> type,
+            MessageBindingKey bindingKey,
+            Subscription removal)
+            implements RuntimeMessageRegistration<M> {
+
+        private TestRuntimeMessageRegistration {
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(bindingKey, "bindingKey");
+            Objects.requireNonNull(removal, "removal");
+        }
+
+        @Override
+        public boolean isClosed() {
+            return removal.isClosed();
+        }
+
+        @Override
+        public void close() {
+            removal.close();
+        }
     }
 }

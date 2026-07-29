@@ -18,10 +18,10 @@ package tv.nicdev.craftrelay.common.internal.protocol;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import tv.nicdev.craftrelay.api.NetworkMessage;
-import tv.nicdev.craftrelay.api.Subscription;
 import tv.nicdev.craftrelay.api.exception.InvalidMessageException;
 import tv.nicdev.craftrelay.api.message.GlobalBroadcastMessage;
 import tv.nicdev.craftrelay.api.message.InstanceHeartbeatMessage;
@@ -43,6 +43,7 @@ final class MessageRegistry {
 
     private final AtomicReference<RegistryState> state =
             new AtomicReference<>(new RegistryState(Map.of(), Map.of()));
+    private final AtomicLong nextGeneration = new AtomicLong();
 
     static MessageRegistry withStandardMessages() {
         MessageRegistry registry = new MessageRegistry();
@@ -60,21 +61,24 @@ final class MessageRegistry {
     }
 
     synchronized void register(String type, Class<? extends NetworkMessage> messageClass) {
-        registerBinding(new Binding<>(key(type, 1), messageClass, null, false));
+        registerBinding(new Binding<>(
+                key(type, 1), nextBindingKey(type, 1), messageClass, null, false));
     }
 
-    synchronized <M extends NetworkMessage> Subscription registerCustom(
+    synchronized <M extends NetworkMessage> CodecRegistration<M> registerCustom(
             MessageType<M> type, MessagePayloadCodec<M> codec) {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(codec, "codec");
         Binding<M> binding =
                 new Binding<>(
                         key(type.identifier(), type.payloadVersion()),
+                        nextBindingKey(type.identifier(), type.payloadVersion()),
                         type.messageClass(),
                         codec,
                         true);
         registerBinding(binding);
-        return Subscription.create(() -> remove(binding));
+        return new CodecRegistration<>(
+                type, binding, tv.nicdev.craftrelay.api.Subscription.create(() -> remove(binding)));
     }
 
     boolean isRegistered(MessageType<?> type) {
@@ -121,17 +125,13 @@ final class MessageRegistry {
         return state.get().bindingsByKey();
     }
 
-    synchronized void closeCustomRegistrations() {
-        RegistryState current = state.get();
-        Map<RegistryKey, Binding<?>> byKey = new HashMap<>();
-        Map<Class<? extends NetworkMessage>, Binding<?>> byClass = new HashMap<>();
-        current.bindingsByKey().values().stream()
-                .filter(binding -> !binding.custom())
-                .forEach(binding -> {
-                    byKey.put(binding.key(), binding);
-                    byClass.put(binding.messageClass(), binding);
-                });
-        state.set(new RegistryState(Map.copyOf(byKey), Map.copyOf(byClass)));
+    boolean isActive(MessageBindingKey bindingKey) {
+        Objects.requireNonNull(bindingKey, "bindingKey");
+        Binding<?> binding =
+                state.get()
+                        .bindingsByKey()
+                        .get(key(bindingKey.type(), bindingKey.payloadVersion()));
+        return binding != null && binding.bindingKey().equals(bindingKey);
     }
 
     private void registerBinding(Binding<?> binding) {
@@ -182,18 +182,29 @@ final class MessageRegistry {
         return new RegistryKey(type, payloadVersion);
     }
 
+    private MessageBindingKey nextBindingKey(String type, int payloadVersion) {
+        return new MessageBindingKey(
+                type, payloadVersion, nextGeneration.incrementAndGet());
+    }
+
     record RegistryKey(String type, int payloadVersion) {
     }
 
     record Binding<M extends NetworkMessage>(
             RegistryKey key,
+            MessageBindingKey bindingKey,
             Class<M> messageClass,
             MessagePayloadCodec<M> customCodec,
             boolean custom) {
 
         Binding {
             Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(bindingKey, "bindingKey");
             Objects.requireNonNull(messageClass, "messageClass");
+            if (!bindingKey.type().equals(key.type())
+                    || bindingKey.payloadVersion() != key.payloadVersion()) {
+                throw new IllegalArgumentException("binding identity does not match registry key");
+            }
             if (custom != (customCodec != null)) {
                 throw new IllegalArgumentException("custom codec and binding type do not match");
             }

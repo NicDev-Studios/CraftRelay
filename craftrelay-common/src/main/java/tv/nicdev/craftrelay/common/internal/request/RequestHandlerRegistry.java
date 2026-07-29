@@ -15,6 +15,8 @@
  */
 package tv.nicdev.craftrelay.common.internal.request;
 
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import tv.nicdev.craftrelay.api.NetworkMessage;
 import tv.nicdev.craftrelay.api.Subscription;
 
@@ -37,8 +39,24 @@ public interface RequestHandlerRegistry extends AutoCloseable {
             Class<Q> requestType, RequestHandler<Q, R> handler);
 
     /**
+     * Registers a handler with an exact response-binding publisher.
+     */
+    <Q extends NetworkMessage, R extends NetworkMessage> Subscription register(
+            Class<Q> requestType,
+            RequestHandler<Q, R> handler,
+            ResponsePublisher<R> responsePublisher);
+
+    /**
      * Removes all handlers and stops handler delivery.
      */
     @Override
     void close();
+
+    /** Publishes one correlated response through an exact codec-registration snapshot. */
+    @FunctionalInterface
+    interface ResponsePublisher<R extends NetworkMessage> {
+
+        CompletableFuture<Void> publish(
+                String targetInstance, R response, UUID correlationId);
+    }
 }

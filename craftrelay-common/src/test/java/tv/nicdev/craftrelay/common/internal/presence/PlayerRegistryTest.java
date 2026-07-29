@@ -8,12 +8,15 @@ package tv.nicdev.craftrelay.common.internal.presence;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
 import tv.nicdev.craftrelay.api.message.PlayerDisconnectedMessage;
@@ -117,6 +120,43 @@ class PlayerRegistryTest {
 
         assertInstanceOf(IllegalStateException.class, failure.getCause());
         assertEquals(0, registry.onlinePlayerCount());
+        registry.stop().join();
+        store.close().join();
+    }
+
+    @Test
+    void refreshFailureEvictsLocalSessionBeforeItsLeaseCanExpire()
+            throws InterruptedException {
+        PlayerPresenceConfig shortLease =
+                new PlayerPresenceConfig(
+                        "test",
+                        Duration.ofMillis(30),
+                        Duration.ofMillis(120),
+                        16);
+        TestNetworkPresenceStore store = new TestNetworkPresenceStore();
+        CountDownLatch ownershipLost = new CountDownLatch(1);
+        PlayerRegistry registry = new PlayerRegistry(
+                store,
+                new TestMessagingRuntime(),
+                new LocalInstanceIdentity(
+                        "proxy-a", NetworkInstanceType.PROXY, Optional.empty()),
+                shortLease,
+                NodeLease.create(),
+                ignored -> ownershipLost.countDown());
+        store.connect().join();
+        registry.start().join();
+        UUID playerId = UUID.randomUUID();
+        registry.connect(
+                        playerId,
+                        "Player",
+                        UUID.randomUUID(),
+                        Optional.empty())
+                .join();
+        store.failPlayerRefreshes();
+
+        assertTrue(ownershipLost.await(2, TimeUnit.SECONDS));
+        assertEquals(0, registry.onlinePlayerCount());
+
         registry.stop().join();
         store.close().join();
     }

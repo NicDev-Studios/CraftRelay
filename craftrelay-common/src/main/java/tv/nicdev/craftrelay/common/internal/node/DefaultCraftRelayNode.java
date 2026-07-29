@@ -55,6 +55,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
             new FutureCompletionDispatcher("craftrelay-api-completion-");
     private final PendingRequestManager requestManager;
     private final RequestHandlerRegistry requestHandlers;
+    private final DefaultCustomMessaging customMessaging;
     private final InstanceRegistry instanceRegistry;
     private final PlayerRegistry playerRegistry;
     private final PlayerOwnershipListener ownershipListener;
@@ -109,6 +110,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                                 ? playerRegistry::onlinePlayerCount
                                 : Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
                         this::handleLeaseLoss);
+        customMessaging = new DefaultCustomMessaging(this, runtime, requestHandlers);
         api =
                 new DefaultCraftRelayApi(
                         this,
@@ -117,7 +119,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                         instanceRegistry,
                         playerRegistry,
                         completionDispatcher,
-                        new DefaultCustomMessaging(this, runtime, requestHandlers));
+                        customMessaging);
     }
 
     @Override
@@ -261,6 +263,11 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
 
     private Throwable closeRequestSystem() {
         Throwable failure = null;
+        try {
+            customMessaging.close();
+        } catch (Throwable closeFailure) {
+            failure = AsyncFailures.merge(failure, closeFailure);
+        }
         try {
             requestHandlers.close();
         } catch (Throwable closeFailure) {

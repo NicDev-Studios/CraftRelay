@@ -131,14 +131,12 @@ public final class LettuceRedisPresenceStore implements NetworkPresenceStore {
                 return {2}
             end
             local currentSession = redis.call('HGET', KEYS[1], 'sessionId')
-            local currentExpiry = tonumber(redis.call('ZSCORE', KEYS[2], ARGV[1]) or '0')
             local currentProxy = redis.call('HGET', KEYS[1], 'proxyId')
             local currentToken = redis.call('HGET', KEYS[1], 'leaseToken')
             if currentSession
                 and (currentSession ~= ARGV[2]
                     or currentProxy ~= ARGV[3]
-                    or currentToken ~= ARGV[4])
-                and currentExpiry > now then
+                    or currentToken ~= ARGV[4]) then
                 return {0,
                     redis.call('HGET', KEYS[1], 'uniqueId') or '',
                     redis.call('HGET', KEYS[1], 'username') or '',

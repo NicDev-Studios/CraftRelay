@@ -10,6 +10,10 @@ A lightweight, modular, and high-performance network synchronization framework f
 * ⚡ Async, thread-safe API
 * 🧩 Easy integration for plugins
 
+## Codebase
+
+[![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2FNicDev-Studios%2FCraftRelay%2Flines)](https://tokei.kojix2.net/github/NicDev-Studios/CraftRelay)
+
 ## Development build
 
 CraftRelay currently targets Java 21, Paper 1.20.6, Velocity 3.4, and Redis.

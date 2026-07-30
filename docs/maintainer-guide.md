@@ -45,19 +45,3 @@ Maven Central Portal. It requires these repository secrets:
 
 The `de.nicdevtv` namespace must already be verified in Maven Central. Published
 Maven Central releases are immutable; corrections require a new patch version.
-
-## Operational diagnostics
-
-CraftRelay remains command-free infrastructure. Paper and Velocity expose no
-admin command or HTTP endpoint. Internal health and fixed-cardinality telemetry
-are emitted through the platform loggers only when operational state changes.
-
-Diagnostic lines begin with stable codes such as
-`CR-REDIS-DISCONNECTED`, `CR-INSTANCE-HEARTBEAT-FAILED`, or
-`CR-DISPATCH-OVERFLOW`. Repeated identical events are coalesced for 30 seconds.
-Messages intentionally omit Redis credentials, payloads, lease and session
-tokens, and correlation identifiers.
-
-Every configuration starts with `config-version: 1`. The loader rejects
-unsupported versions before validating version-specific fields, giving future
-releases an explicit source schema for migrations.

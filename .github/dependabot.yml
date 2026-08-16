@@ -9,7 +9,8 @@ updates:
       time: "04:00"
       timezone: "Europe/Berlin"
 
-    assignees: NicDevTV
+    assignees:
+      - "NicDevTV"
 
     open-pull-requests-limit: 5
 

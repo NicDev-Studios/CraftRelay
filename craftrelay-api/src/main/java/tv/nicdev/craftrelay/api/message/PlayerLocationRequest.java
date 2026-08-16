@@ -23,6 +23,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  * Requests the current network location of a player.
  *
  * @param playerId player unique ID
+ *
+ * @since 0.1.0
  */
 public record PlayerLocationRequest(UUID playerId) implements NetworkMessage {
 

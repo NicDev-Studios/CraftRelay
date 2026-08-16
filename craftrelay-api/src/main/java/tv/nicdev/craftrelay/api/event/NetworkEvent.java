@@ -19,6 +19,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
 
 /**
  * Marker for immutable messages that describe an event in the CraftRelay network.
+ *
+ * @since 0.1.0
  */
 public interface NetworkEvent extends NetworkMessage {
 }

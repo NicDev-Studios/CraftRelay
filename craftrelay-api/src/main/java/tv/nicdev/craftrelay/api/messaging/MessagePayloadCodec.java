@@ -24,6 +24,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  * thread-safe. CraftRelay invokes codecs away from Redis, Netty, Paper, and Velocity I/O threads.
  *
  * @param <M> message type
+ *
+ * @since 0.1.0
  */
 public interface MessagePayloadCodec<M extends NetworkMessage> {
 

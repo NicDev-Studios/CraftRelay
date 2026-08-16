@@ -19,6 +19,8 @@ import java.io.Serial;
 
 /**
  * Indicates that a message does not satisfy the public messaging contract.
+ *
+ * @since 0.1.0
  */
 public final class InvalidMessageException extends CraftRelayException {
 

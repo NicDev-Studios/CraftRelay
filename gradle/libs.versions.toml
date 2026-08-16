@@ -12,6 +12,9 @@ slf4j = "2.0.18"
 snakeyaml = "3.0.1"
 shadow = "9.6.1"
 maven-publish = "0.37.0"
+japicmp = "0.4.6"
+cyclonedx = "3.3.0"
+license-report = "3.1.4"
 
 [libraries]
 paper-api = { module = "io.papermc.paper:paper-api", version.ref = "paper" }
@@ -33,3 +36,6 @@ snakeyaml-engine = { module = "org.snakeyaml:snakeyaml-engine", version.ref = "s
 [plugins]
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
 maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "maven-publish" }
+japicmp = { id = "me.champeau.gradle.japicmp", version.ref = "japicmp" }
+cyclonedx = { id = "org.cyclonedx.bom", version.ref = "cyclonedx" }
+license-report = { id = "com.github.jk1.dependency-license-report", version.ref = "license-report" }

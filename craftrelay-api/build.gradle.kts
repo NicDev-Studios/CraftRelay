@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.maven.publish)
+    alias(libs.plugins.japicmp)
 }
 
 dependencies {
@@ -9,7 +10,7 @@ dependencies {
 }
 
 mavenPublishing {
-    publishToMavenCentral(automaticRelease = true)
+    publishToMavenCentral()
     signAllPublications()
 
     coordinates(

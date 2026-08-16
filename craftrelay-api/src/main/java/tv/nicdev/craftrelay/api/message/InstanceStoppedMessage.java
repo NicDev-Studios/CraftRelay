@@ -23,6 +23,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  *
  * @param instanceId network-unique instance ID
  * @param stoppedAt shutdown time
+ *
+ * @since 0.1.0
  */
 public record InstanceStoppedMessage(String instanceId, Instant stoppedAt)
         implements NetworkMessage {

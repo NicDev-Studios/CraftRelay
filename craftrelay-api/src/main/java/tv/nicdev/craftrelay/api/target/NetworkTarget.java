@@ -19,6 +19,8 @@ import java.util.Objects;
 
 /**
  * Closed set of destinations to which a network message may be routed.
+ *
+ * @since 0.1.0
  */
 public sealed interface NetworkTarget
         permits NetworkTarget.AllInstances,

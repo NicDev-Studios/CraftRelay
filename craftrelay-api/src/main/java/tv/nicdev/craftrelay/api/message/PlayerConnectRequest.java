@@ -24,6 +24,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  *
  * @param playerId player unique ID
  * @param serverId destination server ID
+ *
+ * @since 0.1.0
  */
 public record PlayerConnectRequest(UUID playerId, String serverId) implements NetworkMessage {
 

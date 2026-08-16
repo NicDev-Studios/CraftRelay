@@ -23,6 +23,8 @@ import java.util.Optional;
  * <p>The provider is not a global singleton. Platform adapters expose their own
  * provider instance. The result is empty while the owning node is starting or
  * stopping and after it has stopped.
+ *
+ * @since 0.1.0
  */
 public interface CraftRelayProvider {
 

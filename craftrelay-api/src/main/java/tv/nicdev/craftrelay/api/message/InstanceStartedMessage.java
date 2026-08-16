@@ -23,6 +23,8 @@ import tv.nicdev.craftrelay.api.model.NetworkInstance;
  * Announces that an instance has joined the network.
  *
  * @param instance immutable initial instance snapshot
+ *
+ * @since 0.1.0
  */
 public record InstanceStartedMessage(NetworkInstance instance) implements NetworkMessage {
 

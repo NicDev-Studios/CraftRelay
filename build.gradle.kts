@@ -21,6 +21,8 @@ import org.gradle.api.tasks.javadoc.Javadoc
 
 plugins {
     base
+    alias(libs.plugins.cyclonedx)
+    alias(libs.plugins.license.report)
 }
 
 abstract class GenerateDockerTopologyTask : DefaultTask() {
@@ -37,6 +39,9 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
 
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
+
+    @get:Input
+    abstract val pluginVersion: Property<String>
 
     @TaskAction
     fun generate() {
@@ -199,8 +204,8 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
         appendLine("    volumes:")
         appendLine("      - paper-$number-data:/data")
         appendLine("      - ./paper-$number/server-config:/config:ro")
-        appendLine("      - ../../craftrelay-platform-paper/build/libs/craftrelay-platform-paper-0.1.0-SNAPSHOT.jar:/plugins/CraftRelay.jar:ro")
-        appendLine("      - ../../craftrelay-example-plugin/paper/build/libs/craftrelay-example-paper-0.1.0-SNAPSHOT.jar:/plugins/CraftRelayExample.jar:ro")
+        appendLine("      - ../../craftrelay-platform-paper/build/libs/craftrelay-platform-paper-${pluginVersion.get()}.jar:/plugins/CraftRelay.jar:ro")
+        appendLine("      - ../../craftrelay-example-plugin/paper/build/libs/craftrelay-example-paper-${pluginVersion.get()}.jar:/plugins/CraftRelayExample.jar:ro")
         appendLine("    depends_on:")
         appendLine("      redis:")
         appendLine("        condition: service_healthy")
@@ -228,8 +233,8 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
         appendLine("    volumes:")
         appendLine("      - velocity-$number-data:/server")
         appendLine("      - ./velocity-$number/server-config:/config:ro")
-        appendLine("      - ../../craftrelay-platform-velocity/build/libs/craftrelay-platform-velocity-0.1.0-SNAPSHOT.jar:/plugins/CraftRelay.jar:ro")
-        appendLine("      - ../../craftrelay-example-plugin/velocity/build/libs/craftrelay-example-velocity-0.1.0-SNAPSHOT.jar:/plugins/CraftRelayExample.jar:ro")
+        appendLine("      - ../../craftrelay-platform-velocity/build/libs/craftrelay-platform-velocity-${pluginVersion.get()}.jar:/plugins/CraftRelay.jar:ro")
+        appendLine("      - ../../craftrelay-example-plugin/velocity/build/libs/craftrelay-example-velocity-${pluginVersion.get()}.jar:/plugins/CraftRelayExample.jar:ro")
         appendLine("    depends_on:")
         appendLine("      redis:")
         appendLine("        condition: service_healthy")
@@ -534,6 +539,7 @@ val generateDockerTopology = tasks.register<GenerateDockerTopologyTask>("generat
     defaultEnvironmentFile.set(dockerDefaultEnvironmentFile)
     environmentFile.set(dockerEnvironmentFile)
     outputDirectory.set(dockerGeneratedDirectory)
+    pluginVersion.set(project.version.toString())
 }
 
 tasks.register<Exec>("devUp") {
@@ -601,3 +607,5 @@ tasks.register<DockerSmokeTask>("devSmoke") {
     velocityCount.set(dockerVelocityCount)
     presenceKeyPrefix.set(dockerPresenceKeyPrefix)
 }
+
+apply(from = "gradle/release.gradle.kts")

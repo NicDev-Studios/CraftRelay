@@ -21,6 +21,8 @@ import java.util.Objects;
  * Public metadata for a received request.
  *
  * @param sourceInstance ID of the requesting CraftRelay instance
+ *
+ * @since 0.1.0
  */
 public record RequestContext(String sourceInstance) {
 

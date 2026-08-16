@@ -21,6 +21,10 @@ tasks.named<Test>("test") {
 tasks.register<Test>("integrationTest") {
     description = "Runs integration tests that require Docker."
     group = LifecycleBasePlugin.VERIFICATION_GROUP
+    dependsOn(
+        ":craftrelay-platform-paper:shadowJar",
+        ":craftrelay-platform-velocity:shadowJar",
+    )
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath
     shouldRunAfter(tasks.named("test"))

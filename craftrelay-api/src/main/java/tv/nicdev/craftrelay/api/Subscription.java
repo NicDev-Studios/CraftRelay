@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * A message-listener registration that can be cancelled safely from any thread.
  *
  * <p>Closing a subscription is idempotent. The cancellation action runs at most once.
+ *
+ * @since 0.1.0
  */
 public final class Subscription implements AutoCloseable {
 

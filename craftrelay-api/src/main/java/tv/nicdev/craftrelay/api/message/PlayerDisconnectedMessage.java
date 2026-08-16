@@ -27,6 +27,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  * @param sessionId session being disconnected
  * @param proxyId proxy that owned the session
  * @param disconnectedAt disconnection time
+ *
+ * @since 0.1.0
  */
 public record PlayerDisconnectedMessage(
         UUID playerId, UUID sessionId, String proxyId, Instant disconnectedAt)

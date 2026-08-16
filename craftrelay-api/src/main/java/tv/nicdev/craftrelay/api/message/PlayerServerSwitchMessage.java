@@ -30,6 +30,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  * @param previousServerId previous server, if the player had one
  * @param serverId newly connected server
  * @param switchedAt switch time
+ *
+ * @since 0.1.0
  */
 public record PlayerServerSwitchMessage(
         UUID playerId,

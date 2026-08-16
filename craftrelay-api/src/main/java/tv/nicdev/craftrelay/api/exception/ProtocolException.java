@@ -19,6 +19,8 @@ import java.io.Serial;
 
 /**
  * Indicates an unsupported or malformed CraftRelay protocol interaction.
+ *
+ * @since 0.1.0
  */
 public final class ProtocolException extends CraftRelayException {
 

@@ -24,6 +24,8 @@ import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
  *
  * <p>Registrations are not distributed. Every participating node must register compatible types
  * before exchanging them.
+ *
+ * @since 0.1.0
  */
 public interface CustomMessaging {
 

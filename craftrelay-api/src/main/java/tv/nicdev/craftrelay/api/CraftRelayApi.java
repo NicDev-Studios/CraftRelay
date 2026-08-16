@@ -34,6 +34,8 @@ import tv.nicdev.craftrelay.api.target.NetworkTarget;
  * <p>Implementations must validate all arguments before scheduling work. Futures complete
  * exceptionally when an operation cannot be completed. Message listeners may run on any thread
  * and must not perform blocking work.
+ *
+ * @since 0.1.0
  */
 public interface CraftRelayApi {
 

@@ -26,6 +26,8 @@ import tv.nicdev.craftrelay.api.model.NetworkPlayer;
  *
  * @param playerId requested player unique ID
  * @param player player presence when known
+ *
+ * @since 0.1.0
  */
 public record PlayerLocationResponse(UUID playerId, Optional<NetworkPlayer> player)
         implements NetworkMessage {

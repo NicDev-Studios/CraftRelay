@@ -1,26 +1,40 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-Only the latest version of CraftRelay receives security updates.
+Security fixes are provided for the latest released preview line. After a newer minor preview is published, older preview lines no longer receive fixes unless a release notice explicitly says otherwise.
 
-| Version | Supported |
-| ------- | --------- |
-| Latest  | ✅ |
-| Older   | ❌ |
+| Version | Status |
+| --- | --- |
+| `0.1.x` | Supported after the first `0.1.0` release |
+| Unreleased builds | Best effort only |
+| Older preview lines | Not supported |
 
-## Reporting a Vulnerability
+## Report a vulnerability
 
-If you discover a security vulnerability, please **do not** open a public GitHub issue.
+Do not open a public issue for a suspected vulnerability. Email **security@nicdevtv.de** with:
 
-Instead, report it privately by email to **security@nicdevtv.de**.
+- the affected CraftRelay version and platform;
+- a concise description of the impact;
+- reproducible steps or a minimal proof of concept;
+- any conditions required for exploitation;
+- suggested mitigations, if known.
 
-Please include:
-- A description of the vulnerability
-- Steps to reproduce it
-- The affected version
-- Any relevant logs or proof of concept
+Remove credentials, Redis URLs, access tokens, player data, payload contents, lease tokens, session IDs, and correlation IDs from logs before attaching them. If sensitive material is required to reproduce the issue, mention that first so a safer transfer method can be arranged.
 
-We will acknowledge your report as soon as possible and investigate the issue. If the vulnerability is confirmed, we will work on a fix and keep you informed throughout the process.
+You should receive an acknowledgement within three business days and an initial assessment within seven business days. Complex reports may take longer to resolve, but material status changes will be communicated to the reporter.
 
-Thank you for helping keep CraftRelay secure.
+Please allow a reasonable remediation period before public disclosure. Credit is given in the security advisory unless the reporter prefers to remain anonymous.
+
+## Security-sensitive areas
+
+Reports are especially useful when they involve:
+
+- bypassing Redis authentication, TLS, lease fencing, or duplicate-session protection;
+- deserializing an unregistered or attacker-selected Java class;
+- leaking credentials or internal message payloads through logs or artifacts;
+- escaping configured message-size, queue, listener, handler, or request limits;
+- executing Bukkit, Velocity, Netty, or Lettuce work on an unsafe or blocked thread;
+- publishing tampered release artifacts or bypassing release verification.
+
+Gameplay bugs, configuration questions, and ordinary crashes without a security impact belong in the public issue tracker.

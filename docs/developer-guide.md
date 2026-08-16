@@ -10,12 +10,12 @@ Use the API module only:
 
 ```kotlin
 dependencies {
-    compileOnly("de.nicdevtv:craftrelay-api:0.1.0-SNAPSHOT")
+    compileOnly("de.nicdevtv:craftrelay-api:0.1.0")
 }
 ```
 
-Until snapshots are published, a composite build or a local Maven publication
-can provide the same coordinate.
+Preview patch releases remain compatible within their `0.x` line. Read the
+changelog before moving to a newer preview minor version.
 
 ## Paper
 

@@ -20,6 +20,8 @@ import java.util.Objects;
 
 /**
  * Base class for failures reported by the public CraftRelay API.
+ *
+ * @since 0.1.0
  */
 public class CraftRelayException extends RuntimeException {
 

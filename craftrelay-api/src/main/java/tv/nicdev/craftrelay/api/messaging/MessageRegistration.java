@@ -25,6 +25,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  * the immutable codec snapshot captured before the registration was closed.
  *
  * @param <M> registered message type
+ *
+ * @since 0.1.0
  */
 public interface MessageRegistration<M extends NetworkMessage> extends AutoCloseable {
 

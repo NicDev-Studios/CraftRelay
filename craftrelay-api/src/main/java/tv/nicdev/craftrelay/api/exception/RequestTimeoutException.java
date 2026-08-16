@@ -19,6 +19,8 @@ import java.io.Serial;
 
 /**
  * Indicates that no correlated response arrived within the configured timeout.
+ *
+ * @since 0.1.0
  */
 public final class RequestTimeoutException extends CraftRelayException {
 

@@ -19,6 +19,8 @@ import java.io.Serial;
 
 /**
  * Indicates that the local CraftRelay API is not available for an operation.
+ *
+ * @since 0.1.0
  */
 public final class ApiUnavailableException extends CraftRelayException {
 

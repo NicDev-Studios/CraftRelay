@@ -23,6 +23,8 @@ import tv.nicdev.craftrelay.api.model.NetworkPlayer;
  * Announces a new player session.
  *
  * @param player immutable player-presence snapshot
+ *
+ * @since 0.1.0
  */
 public record PlayerConnectedMessage(NetworkPlayer player) implements NetworkMessage {
 

@@ -21,6 +21,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  * Carries text intended for a network-wide broadcast.
  *
  * @param content non-blank broadcast content
+ *
+ * @since 0.1.0
  */
 public record GlobalBroadcastMessage(String content) implements NetworkMessage {
 

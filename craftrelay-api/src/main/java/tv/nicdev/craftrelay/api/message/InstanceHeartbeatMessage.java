@@ -23,6 +23,8 @@ import tv.nicdev.craftrelay.api.model.NetworkInstance;
  * Reports the latest state of a live network instance.
  *
  * @param instance immutable instance snapshot
+ *
+ * @since 0.1.0
  */
 public record InstanceHeartbeatMessage(NetworkInstance instance) implements NetworkMessage {
 

@@ -23,6 +23,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  *
  * @param <Q> request type
  * @param <R> response type
+ *
+ * @since 0.1.0
  */
 @FunctionalInterface
 public interface RequestHandler<Q extends NetworkMessage, R extends NetworkMessage> {

@@ -17,6 +17,8 @@ package tv.nicdev.craftrelay.api.model;
 
 /**
  * Role of an instance participating in the CraftRelay network.
+ *
+ * @since 0.1.0
  */
 public enum NetworkInstanceType {
     /** A Velocity proxy or another supported proxy implementation. */

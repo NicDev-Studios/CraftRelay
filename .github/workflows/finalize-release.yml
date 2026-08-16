@@ -1,0 +1,150 @@
+name: Finalize release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing draft tag (for example v0.1.0)"
+        required: true
+        type: string
+      confirmation:
+        description: "Type publish to confirm the irreversible Maven Central release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  attestations: read
+
+concurrency:
+  group: finalize-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    environment: maven-central
+    steps:
+      - name: Validate explicit confirmation
+        shell: bash
+        run: |
+          [[ "${{ inputs.confirmation }}" == "publish" ]] || {
+            echo "Confirmation must be exactly 'publish'." >&2
+            exit 1
+          }
+          [[ "${{ inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Tag must use vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          }
+
+      - name: Check out exact tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify draft and download assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
+          [[ "$draft" == "true" ]] || { echo "Release $TAG is not a draft." >&2; exit 1; }
+          [[ "$target" == "$(git rev-parse HEAD)" ]] || { echo "Draft and checked-out tag target different commits." >&2; exit 1; }
+          mkdir artifacts
+          gh release download "$TAG" --dir artifacts
+          printf '%s\n' \
+            "RELEASE_NOTES.md" \
+            "SHA256SUMS" \
+            "SHA512SUMS" \
+            "THIRD-PARTY-NOTICES.txt" \
+            "craftrelay-$version.cdx.json" \
+            "craftrelay-example-paper-$version.jar" \
+            "craftrelay-example-velocity-$version.jar" \
+            "craftrelay-platform-paper-$version.jar" \
+            "craftrelay-platform-velocity-$version.jar" | sort > expected-assets.txt
+          find artifacts -maxdepth 1 -type f -printf '%f\n' | sort > actual-assets.txt
+          diff -u expected-assets.txt actual-assets.txt
+          (cd artifacts && sha256sum --check SHA256SUMS && sha512sum --check SHA512SUMS)
+          for asset in artifacts/*; do
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
+          done
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
+
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
+
+      - name: Build and validate signed API publication
+        env:
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          ./gradlew :craftrelay-api:publishToMavenLocal verifyApiPublication \
+            -PcraftrelayVersion="${TAG#v}" --no-daemon
+          publication="$HOME/.m2/repository/de/nicdevtv/craftrelay-api/$version"
+          [[ -f "$publication/craftrelay-api-$version.pom" ]]
+          [[ -f "$publication/craftrelay-api-$version.jar" ]]
+          [[ -f "$publication/craftrelay-api-$version-sources.jar" ]]
+          [[ -f "$publication/craftrelay-api-$version-javadoc.jar" ]]
+          find "$publication" -maxdepth 1 -name '*.asc' -print -quit | grep -q . || {
+            echo "The local API publication contains no GPG signatures." >&2
+            exit 1
+          }
+
+      - name: Publish API to Maven Central when absent
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          pom="https://repo1.maven.org/maven2/de/nicdevtv/craftrelay-api/$version/craftrelay-api-$version.pom"
+          if curl --fail --silent --show-error --head "$pom" >/dev/null; then
+            echo "de.nicdevtv:craftrelay-api:$version already exists on Maven Central."
+          else
+            ./gradlew :craftrelay-api:publishAndReleaseToMavenCentral \
+              -PcraftrelayVersion="$version" --no-daemon
+            for _ in {1..60}; do
+              curl --fail --silent --head "$pom" >/dev/null && exit 0
+              sleep 20
+            done
+            echo "Maven Central did not expose the publication within 20 minutes." >&2
+            exit 1
+          fi
+
+      - name: Publish verified GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          major="${version%%.*}"
+          args=(--draft=false)
+          if [[ "$major" == "0" ]]; then
+            args+=(--prerelease)
+          else
+            args+=(--prerelease=false)
+          fi
+          gh release edit "$TAG" "${args[@]}"

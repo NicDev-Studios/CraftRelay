@@ -1,85 +1,81 @@
+<div align="center">
+
 # CraftRelay
 
-A lightweight, modular, and high-performance network synchronization framework for Minecraft proxies and servers.
+Reliable messaging and presence for Paper and Velocity networks.
 
-## Features
-
-* 🚀 Multi-proxy & multi-server support
-* 📡 Redis-based messaging
-* 🔌 Velocity & Paper support
-* ⚡ Async, thread-safe API
-* 🧩 Easy integration for plugins
-
-## Codebase
-
+[![Build](https://github.com/NicDev-Studios/CraftRelay/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/NicDev-Studios/CraftRelay/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/NicDev-Studios/CraftRelay?include_prereleases&label=release)](https://github.com/NicDev-Studios/CraftRelay/releases)
+[![Maven Central](https://img.shields.io/maven-central/v/de.nicdevtv/craftrelay-api?label=Maven%20Central)](https://central.sonatype.com/artifact/de.nicdevtv/craftrelay-api)
+[![Java 21](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white)](https://adoptium.net/temurin/releases/?version=21)
+[![License](https://img.shields.io/github/license/NicDev-Studios/CraftRelay)](LICENSE)
 [![Lines of Code](https://img.shields.io/endpoint?url=https%3A%2F%2Ftokei.kojix2.net%2Fbadge%2Fgithub%2FNicDev-Studios%2FCraftRelay%2Flines)](https://tokei.kojix2.net/github/NicDev-Studios/CraftRelay)
 
-## Development build
+</div>
 
-CraftRelay currently targets Java 21, Paper 1.20.6, Velocity 3.4, and Redis.
+CraftRelay connects Paper servers and Velocity proxies through Redis. It provides one asynchronous Java API for targeted messages, request/response calls, instance discovery, and player presence without exposing Redis or platform internals to other plugins.
+
+> [!IMPORTANT]
+> CraftRelay is preparing its first `v0.1.0` developer preview. The API is usable, but releases before `1.0` may introduce documented breaking changes between minor versions.
+
+## What it provides
+
+- Targeted messaging to the whole network, proxies, servers, groups, or one instance
+- Typed request/response calls with correlation, timeouts, and bounded capacity
+- Redis-backed instance and player presence with leases, fencing, and crash expiry
+- Duplicate-session protection across multiple Velocity proxies
+- Explicit, versioned custom messages without dynamic class deserialization
+- Non-blocking Paper and Velocity integrations with isolated listener execution
+
+Redis Pub/Sub is deliberately best effort. CraftRelay does not provide an offline queue or durable message delivery.
+
+## Install
+
+Download the matching Paper and Velocity JARs from the [latest GitHub release](https://github.com/NicDev-Studios/CraftRelay/releases), place them in each platform's `plugins` directory, and start each node once. CraftRelay creates a strict `config.yml` and remains disabled until `instance.id` is changed from `change-me`.
+
+Every node needs a unique, stable instance ID. Nodes in the same network must share the Redis connection and CraftRelay prefix.
+
+Plugin developers depend only on the platform-neutral API:
+
+```kotlin
+dependencies {
+    compileOnly("de.nicdevtv:craftrelay-api:0.1.0")
+}
+```
+
+Paper exposes `CraftRelayApi` through Bukkit's `ServicesManager`. Velocity exposes `CraftRelayProvider` through the declared CraftRelay plugin dependency and fires `CraftRelayReadyEvent` after asynchronous startup.
+
+See the [Developer Guide](docs/developer-guide.md) for lifecycle-safe access, threading rules, custom messages, and request handlers.
+
+## Build and test
+
+CraftRelay requires Java 21. Unit tests and the normal build do not require Docker:
 
 ```shell
 ./gradlew clean build
 ```
 
-The deployable platform plugins are created at:
+Redis integration tests and the complete local network use Docker:
 
-* `craftrelay-platform-paper/build/libs/craftrelay-platform-paper-0.1.0-SNAPSHOT.jar`
-* `craftrelay-platform-velocity/build/libs/craftrelay-platform-velocity-0.1.0-SNAPSHOT.jar`
-* `craftrelay-example-plugin/paper/build/libs/craftrelay-example-paper-0.1.0-SNAPSHOT.jar`
-* `craftrelay-example-plugin/velocity/build/libs/craftrelay-example-velocity-0.1.0-SNAPSHOT.jar`
+```shell
+./gradlew integrationTest
+./gradlew devSmoke
+```
 
-On first startup, each plugin creates `config.yml` and stops until
-`instance.id` is changed from `change-me`. Every node needs a unique, stable
-ID. All nodes in one network must use the same Redis connection and
-messaging/presence prefix.
-
-The strict configuration starts with `config-version: 1`. Unsupported schema
-versions and unknown fields are rejected rather than silently ignored.
-
-Paper exposes `CraftRelayApi` through the Bukkit services manager. Velocity
-plugins resolve the platform-neutral `CraftRelayProvider` from their declared
-CraftRelay dependency and can additionally listen for `CraftRelayReadyEvent`.
-
-## Developer example
-
-Install the matching CraftRelay and CraftRelay Example JAR on Paper and
-Velocity. Both examples expose `/craftrelayexample` with alias `/crelay` and
-permission `craftrelay.example.admin`:
-
-* `state`
-* `instances`
-* `player <uuid>`
-* `broadcast <message>`
-* `connect <uuid> <server-id>`
-
-The commands never wait on API futures. Platform output is scheduled back onto
-the Paper or Velocity scheduler. See the
-[Developer Guide](docs/developer-guide.md) for dependency setup, lifecycle
-access, custom messages, request handlers, and subscription cleanup. Repository
-and release operations are documented separately in the
-[Maintainer Guide](docs/maintainer-guide.md).
-
-The local Docker topology and its reproducible smoke test are documented in
-[`docker/README.md`](docker/README.md).
-
-The developer network is cross-platform:
+`devUp` starts an editable network with Redis, two Paper servers, two Velocity proxies, and both example plugins. Copy `docker/.env.example` to `docker/.env` to change the topology or Minecraft version.
 
 ```shell
 ./gradlew devUp
-./gradlew devSmoke
+./gradlew devLogs
 ./gradlew devDown
 ```
 
-Copy `docker/.env.example` to `docker/.env` to override the Paper/Velocity
-counts, Minecraft or Velocity version, memory, first proxy port, or `PAPER_OPS`.
-The topology defaults to two Paper servers, two Velocity proxies, and Minecraft
-`1.20.6`; configured operators are synchronized to every generated server.
+The Docker workflow is documented in [docker/README.md](docker/README.md). Repository maintenance and releases are documented separately in the [Maintainer Guide](docs/maintainer-guide.md).
+
+## Security
+
+Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Do not include Redis credentials, player data, or production payloads in public issues.
 
 ## License
 
-Licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
-
----
-
-Made with ❤️ by NicDev-Studios
+CraftRelay is licensed under the [Apache License 2.0](LICENSE).

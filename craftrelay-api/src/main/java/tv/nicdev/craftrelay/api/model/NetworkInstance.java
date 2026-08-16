@@ -28,6 +28,8 @@ import java.util.Optional;
  * @param startedAt instance startup time
  * @param lastHeartbeat latest observed heartbeat
  * @param onlinePlayerCount reported online-player count
+ *
+ * @since 0.1.0
  */
 public record NetworkInstance(
         String id,

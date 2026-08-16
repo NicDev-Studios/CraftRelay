@@ -17,6 +17,8 @@ package tv.nicdev.craftrelay.api;
 
 /**
  * Lifecycle state of the local CraftRelay API implementation.
+ *
+ * @since 0.1.0
  */
 public enum CraftRelayState {
     /** The implementation is being initialized and cannot serve requests yet. */

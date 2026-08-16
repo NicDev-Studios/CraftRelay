@@ -30,6 +30,8 @@ import java.util.UUID;
  * @param sessionId unique ID of the current connection session
  * @param connectedAt session connection time
  * @param lastUpdatedAt latest presence update time
+ *
+ * @since 0.1.0
  */
 public record NetworkPlayer(
         UUID uniqueId,

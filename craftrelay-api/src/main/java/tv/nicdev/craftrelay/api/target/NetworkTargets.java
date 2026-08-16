@@ -17,6 +17,8 @@ package tv.nicdev.craftrelay.api.target;
 
 /**
  * Factory for the standard CraftRelay network targets.
+ *
+ * @since 0.1.0
  */
 public final class NetworkTargets {
 

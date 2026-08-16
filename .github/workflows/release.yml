@@ -1,41 +1,56 @@
-name: Release
+name: Release preflight
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: release-preflight-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  preflight:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Java 21
-        uses: actions/setup-java@v5
+      - name: Check out tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          distribution: temurin
-          java-version: "21"
+          fetch-depth: 0
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
 
-      - name: Validate release version
+      - name: Validate tag and changelog
         id: version
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must use a semantic version such as v0.1.0." >&2
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH." >&2
             exit 1
           fi
+          version="${GITHUB_REF_NAME#v}"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "The tagged commit is not contained in main." >&2
+            exit 1
+          }
+          grep -Eq "^## \\[$version\\]( - .+)?$" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for $version." >&2
+            exit 1
+          }
           echo "value=$version" >> "$GITHUB_OUTPUT"
+          if [[ "${version%%.*}" == "0" ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve human contributors
         id: contributors
@@ -44,84 +59,106 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          response="$(gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/contributors?per_page=100")"
+          response="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/contributors?per_page=100")"
           authors="$(jq -r '
-            [.[][] |
-              select(.type == "User") |
-              .login |
+            [.[][] | select(.type == "User") | .login |
               select(test("\\[bot\\]$"; "i") | not) |
-              select(test("bot$"; "i") | not)
-            ] |
-            reduce .[] as $login
-              ([]; if index($login) then . else . + [$login] end) |
-            .[:10] |
-            join(",")
+              select(test("bot$"; "i") | not)] |
+            reduce .[] as $login ([]; if index($login) then . else . + [$login] end) |
+            .[:10] | join(",")
           ' <<<"$response")"
           if [[ -z "$authors" ]]; then
-            echo "No human GitHub contributors were returned; refusing to build release metadata." >&2
+            echo "GitHub returned no human contributors; refusing to create incomplete metadata." >&2
             exit 1
           fi
           echo "authors=$authors" >> "$GITHUB_OUTPUT"
 
-      - name: Build and test release artifacts
-        run: >
-          ./gradlew
-          clean
-          build
-          integrationTest
-          :craftrelay-platform-paper:shadowJar
-          :craftrelay-platform-velocity:shadowJar
-          :craftrelay-example-plugin:paper:shadowJar
-          :craftrelay-example-plugin:velocity:shadowJar
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
+
+      - name: Set reproducible build timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build, test, and create first bundle
+        run: >-
+          ./gradlew clean build integrationTest devSmoke releaseCheck releaseBundle
           -PcraftrelayVersion=${{ steps.version.outputs.value }}
           -PcraftrelayAuthors=${{ steps.contributors.outputs.authors }}
           --no-daemon
 
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: release-test-reports
-          path: |
-            **/build/reports/tests/
-            **/build/test-results/
-          if-no-files-found: warn
+      - name: Preserve first bundle
+        shell: bash
+        run: cp -a "build/release/${{ steps.version.outputs.value }}" "$RUNNER_TEMP/release-first"
 
-      - name: Upload plugin artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: craftrelay-${{ github.ref_name }}
-          path: |
-            craftrelay-platform-paper/build/libs/craftrelay-platform-paper-${{ steps.version.outputs.value }}.jar
-            craftrelay-platform-velocity/build/libs/craftrelay-platform-velocity-${{ steps.version.outputs.value }}.jar
-            craftrelay-example-plugin/paper/build/libs/craftrelay-example-paper-${{ steps.version.outputs.value }}.jar
-            craftrelay-example-plugin/velocity/build/libs/craftrelay-example-velocity-${{ steps.version.outputs.value }}.jar
-          if-no-files-found: error
+      - name: Rebuild bundle from clean state
+        run: >-
+          ./gradlew clean releaseBundle
+          -PcraftrelayVersion=${{ steps.version.outputs.value }}
+          -PcraftrelayAuthors=${{ steps.contributors.outputs.authors }}
+          --no-daemon
 
-      - name: Create draft GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify byte-for-byte reproducibility
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" \
-            craftrelay-platform-paper/build/libs/craftrelay-platform-paper-${{ steps.version.outputs.value }}.jar \
-            craftrelay-platform-velocity/build/libs/craftrelay-platform-velocity-${{ steps.version.outputs.value }}.jar \
-            craftrelay-example-plugin/paper/build/libs/craftrelay-example-paper-${{ steps.version.outputs.value }}.jar \
-            craftrelay-example-plugin/velocity/build/libs/craftrelay-example-velocity-${{ steps.version.outputs.value }}.jar \
-            --draft \
-            --generate-notes \
-            --title "CraftRelay $GITHUB_REF_NAME"
+          first="$RUNNER_TEMP/release-first"
+          second="build/release/${{ steps.version.outputs.value }}"
+          (cd "$first" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/first.sha256"
+          (cd "$second" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/second.sha256"
+          diff -u "$RUNNER_TEMP/first.sha256" "$RUNNER_TEMP/second.sha256"
 
-      - name: Publish CraftRelay API to Maven Central
+      - name: Attest release assets
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: build/release/${{ steps.version.outputs.value }}/*
+
+      - name: Attest plugin SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: |
+            build/release/${{ steps.version.outputs.value }}/craftrelay-platform-paper-${{ steps.version.outputs.value }}.jar
+            build/release/${{ steps.version.outputs.value }}/craftrelay-platform-velocity-${{ steps.version.outputs.value }}.jar
+            build/release/${{ steps.version.outputs.value }}/craftrelay-example-paper-${{ steps.version.outputs.value }}.jar
+            build/release/${{ steps.version.outputs.value }}/craftrelay-example-velocity-${{ steps.version.outputs.value }}.jar
+          sbom-path: build/release/${{ steps.version.outputs.value }}/craftrelay-${{ steps.version.outputs.value }}.cdx.json
+
+      - name: Create or update matching draft release
         env:
-          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
-          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
-          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
-        run: >
-          ./gradlew
-          :craftrelay-api:publishAndReleaseToMavenCentral
-          -PcraftrelayVersion=${{ steps.version.outputs.value }}
-          --no-daemon
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="build/release/$VERSION"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)"
+            target="$(gh release view "$GITHUB_REF_NAME" --json targetCommitish --jq .targetCommitish)"
+            [[ "$draft" == "true" ]] || { echo "Existing release is not a draft." >&2; exit 1; }
+            [[ "$target" == "$GITHUB_SHA" ]] || { echo "Existing draft targets another commit." >&2; exit 1; }
+            gh release upload "$GITHUB_REF_NAME" "$bundle"/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$bundle/RELEASE_NOTES.md"
+          else
+            args=(--draft --target "$GITHUB_SHA" --title "CraftRelay $GITHUB_REF_NAME" --notes-file "$bundle/RELEASE_NOTES.md")
+            [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
+            gh release create "$GITHUB_REF_NAME" "$bundle"/* "${args[@]}"
+          fi
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-preflight-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+            **/build/reports/api/
+            build/reports/licenses/
+          if-no-files-found: warn

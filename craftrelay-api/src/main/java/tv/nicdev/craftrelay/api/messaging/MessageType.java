@@ -27,6 +27,8 @@ import tv.nicdev.craftrelay.api.NetworkMessage;
  * @param payloadVersion positive payload-schema version
  * @param messageClass exact immutable Java message class
  * @param <M> message type
+ *
+ * @since 0.1.0
  */
 public record MessageType<M extends NetworkMessage>(
         String namespace, String name, int payloadVersion, Class<M> messageClass) {

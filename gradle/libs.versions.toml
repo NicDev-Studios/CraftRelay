@@ -13,7 +13,7 @@ snakeyaml = "3.1.1"
 shadow = "9.6.1"
 maven-publish = "0.37.0"
 japicmp = "0.4.6"
-cyclonedx = "3.3.0"
+cyclonedx = "3.4.1"
 license-report = "3.1.4"
 
 [libraries]

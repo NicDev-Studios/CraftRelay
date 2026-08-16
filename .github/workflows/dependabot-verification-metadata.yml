@@ -1,0 +1,161 @@
+name: Update Dependabot verification metadata
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - gradle/libs.versions.toml
+      - gradle/wrapper/gradle-wrapper.properties
+      - gradle/verification-metadata.xml
+
+permissions: {}
+
+concurrency:
+  group: dependabot-verification-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      metadata_changed: ${{ steps.metadata.outputs.changed }}
+    steps:
+      - name: Check out Dependabot revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify allowed Dependabot changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$HEAD_SHA^{commit}"
+          while IFS= read -r file; do
+            case "$file" in
+              gradle/libs.versions.toml|gradle/wrapper/gradle-wrapper.properties|gradle/verification-metadata.xml)
+                ;;
+              *)
+                echo "Unexpected file in Dependabot Gradle PR: $file" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+
+      - name: Set up Java 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
+
+      - name: Generate isolated dependency verification project
+        env:
+          SEED_PROJECT: ${{ runner.temp }}/dependency-verification-seed
+        run: |
+          set -euo pipefail
+          python3 scripts/generate-dependency-verification-project.py "$SEED_PROJECT"
+          ./gradlew -p "$SEED_PROJECT" resolveVerificationDependencies \
+            --no-daemon --write-verification-metadata sha256
+          python3 scripts/merge-gradle-verification-metadata.py \
+            gradle/verification-metadata.xml \
+            "$SEED_PROJECT/gradle/verification-metadata.xml"
+
+      - name: Check generated metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- gradle/verification-metadata.xml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --quiet -- . ':(exclude)gradle/verification-metadata.xml' || {
+            echo "Gradle changed files other than gradle/verification-metadata.xml." >&2
+            git status --short >&2
+            exit 1
+          }
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse("gradle/verification-metadata.xml")
+          PY
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload generated metadata
+        if: steps.metadata.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dependabot-verification-metadata
+          path: gradle/verification-metadata.xml
+          if-no-files-found: error
+
+  commit:
+    needs: resolve
+    if: needs.resolve.outputs.metadata_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact Dependabot revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Download generated metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dependabot-verification-metadata
+          path: generated-metadata
+
+      - name: Apply and commit metadata only
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]] || {
+            echo "Dependabot PR changed while metadata was being generated; refusing to push." >&2
+            exit 1
+          }
+          metadata="$(find generated-metadata -type f -name verification-metadata.xml -print -quit)"
+          [[ -n "$metadata" ]] || {
+            echo "Generated verification metadata was not found." >&2
+            exit 1
+          }
+          cp "$metadata" gradle/verification-metadata.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          ET.parse("gradle/verification-metadata.xml")
+          PY
+          files="$(git diff --name-only)"
+          [[ "$files" == "gradle/verification-metadata.xml" ]] || {
+            echo "The metadata update changed an unexpected file:" >&2
+            git diff --name-only >&2
+            exit 1
+          }
+          git diff --check
+          if git diff --quiet -- gradle/verification-metadata.xml; then
+            echo "Verification metadata is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gradle/verification-metadata.xml
+          git commit -m "chore(deps): update Gradle verification metadata"
+          git push origin "HEAD:$BRANCH"

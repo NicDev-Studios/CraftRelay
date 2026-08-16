@@ -108,13 +108,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
       - name: Check out the exact Dependabot revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Download generated metadata
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -125,7 +126,6 @@ jobs:
       - name: Apply and commit metadata only
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-          BRANCH: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -154,8 +154,19 @@ jobs:
             echo "Verification metadata is already up to date."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add gradle/verification-metadata.xml
-          git commit -m "chore(deps): update Gradle verification metadata"
-          git push origin "HEAD:$BRANCH"
+      - name: Create verified metadata commit
+        uses: iarekylew00t/verified-bot-commit@1ccc6afd0f789e8442cff7deec3e9856a693cc7e # v2.3.4
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          message: chore(deps): update Gradle verification metadata
+          files: gradle/verification-metadata.xml
+          if-no-commit: info
+
+      - name: Re-run build for verified metadata commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"

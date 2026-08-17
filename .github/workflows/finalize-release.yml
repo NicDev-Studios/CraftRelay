@@ -12,9 +12,7 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  attestations: read
+permissions: {}
 
 concurrency:
   group: finalize-${{ inputs.tag }}
@@ -23,16 +21,24 @@ concurrency:
 jobs:
   finalize:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      attestations: read
     environment: maven-central
     steps:
       - name: Validate explicit confirmation
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+          CONFIRMATION_INPUT: ${{ inputs.confirmation }}
         shell: bash
         run: |
-          [[ "${{ inputs.confirmation }}" == "publish" ]] || {
+          set -euo pipefail
+          [[ "$CONFIRMATION_INPUT" == "publish" ]] || {
             echo "Confirmation must be exactly 'publish'." >&2
             exit 1
           }
-          [[ "${{ inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          [[ "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "Tag must use vMAJOR.MINOR.PATCH." >&2
             exit 1
           }
@@ -42,6 +48,7 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Verify draft and download assets
         env:
@@ -114,21 +121,31 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
           TAG: ${{ inputs.tag }}
+          MAVEN_REPOSITORY_BASE: https://repo1.maven.org/maven2/de/nicdevtv/craftrelay-api
         shell: bash
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          pom="https://repo1.maven.org/maven2/de/nicdevtv/craftrelay-api/$version/craftrelay-api-$version.pom"
-          if curl --fail --silent --show-error --head "$pom" >/dev/null; then
+          pom="$MAVEN_REPOSITORY_BASE/$version/craftrelay-api-$version.pom"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --head "$pom")"
+          if [[ "$status" == "200" ]]; then
             echo "de.nicdevtv:craftrelay-api:$version already exists on Maven Central."
-          else
+          elif [[ "$status" == "404" ]]; then
             ./gradlew :craftrelay-api:publishAndReleaseToMavenCentral \
               -PcraftrelayVersion="$version" --no-daemon
             for _ in {1..60}; do
-              curl --fail --silent --head "$pom" >/dev/null && exit 0
+              status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --head "$pom")"
+              [[ "$status" == "200" ]] && exit 0
+              [[ "$status" == "404" ]] || {
+                echo "Maven Central returned HTTP $status while waiting for the publication." >&2
+                exit 1
+              }
               sleep 20
             done
             echo "Maven Central did not expose the publication within 20 minutes." >&2
+            exit 1
+          else
+            echo "Maven Central returned HTTP $status while checking the publication." >&2
             exit 1
           fi
 

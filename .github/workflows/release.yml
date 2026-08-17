@@ -4,11 +4,7 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
+permissions: {}
 
 concurrency:
   group: release-preflight-${{ github.ref_name }}
@@ -17,11 +13,21 @@ concurrency:
 jobs:
   preflight:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Check out tagged commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@90ddb51e90a5fd9ba75f40cf85156b7b41bf76a3 # v6
@@ -87,29 +93,39 @@ jobs:
         run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Build, test, and create first bundle
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          AUTHORS: ${{ steps.contributors.outputs.authors }}
         run: >-
           ./gradlew clean build integrationTest devSmoke releaseCheck releaseBundle
-          -PcraftrelayVersion=${{ steps.version.outputs.value }}
-          -PcraftrelayAuthors=${{ steps.contributors.outputs.authors }}
+          -PcraftrelayVersion="$VERSION"
+          -PcraftrelayAuthors="$AUTHORS"
           --no-daemon
 
       - name: Preserve first bundle
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         shell: bash
-        run: cp -a "build/release/${{ steps.version.outputs.value }}" "$RUNNER_TEMP/release-first"
+        run: cp -a "build/release/$VERSION" "$RUNNER_TEMP/release-first"
 
       - name: Rebuild bundle from clean state
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          AUTHORS: ${{ steps.contributors.outputs.authors }}
         run: >-
           ./gradlew clean releaseBundle
-          -PcraftrelayVersion=${{ steps.version.outputs.value }}
-          -PcraftrelayAuthors=${{ steps.contributors.outputs.authors }}
+          -PcraftrelayVersion="$VERSION"
+          -PcraftrelayAuthors="$AUTHORS"
           --no-daemon
 
       - name: Verify byte-for-byte reproducibility
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         shell: bash
         run: |
           set -euo pipefail
           first="$RUNNER_TEMP/release-first"
-          second="build/release/${{ steps.version.outputs.value }}"
+          second="build/release/$VERSION"
           (cd "$first" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/first.sha256"
           (cd "$second" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/second.sha256"
           diff -u "$RUNNER_TEMP/first.sha256" "$RUNNER_TEMP/second.sha256"
@@ -129,11 +145,44 @@ jobs:
             build/release/${{ steps.version.outputs.value }}/craftrelay-example-velocity-${{ steps.version.outputs.value }}.jar
           sbom-path: build/release/${{ steps.version.outputs.value }}/craftrelay-${{ steps.version.outputs.value }}.cdx.json
 
+      - name: Upload release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-bundle
+          path: build/release/${{ steps.version.outputs.value }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-preflight-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+            **/build/reports/api/
+            build/reports/licenses/
+          if-no-files-found: warn
+
+  publish-draft:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: build/release/${{ needs.preflight.outputs.version }}
+
       - name: Create or update matching draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.value }}
-          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
@@ -150,15 +199,3 @@ jobs:
             [[ "$PRERELEASE" == "true" ]] && args+=(--prerelease)
             gh release create "$GITHUB_REF_NAME" "$bundle"/* "${args[@]}"
           fi
-
-      - name: Upload verification reports
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: release-preflight-reports
-          path: |
-            **/build/reports/tests/
-            **/build/test-results/
-            **/build/reports/api/
-            build/reports/licenses/
-          if-no-files-found: warn

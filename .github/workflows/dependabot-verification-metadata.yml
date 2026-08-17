@@ -1,7 +1,7 @@
 name: Update Dependabot verification metadata
 
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- guarded to same-repository Dependabot PRs and never runs arbitrary project code
     types: [opened, synchronize, reopened]
     paths:
       - gradle/libs.versions.toml
@@ -20,6 +20,7 @@ jobs:
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     outputs:
@@ -106,6 +107,7 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.metadata_changed == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       actions: write

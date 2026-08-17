@@ -162,7 +162,7 @@ jobs:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
           ref: ${{ github.event.pull_request.head.ref }}
-          message: chore(deps): update Gradle verification metadata
+          message: "chore(deps): update Gradle verification metadata"
           files: gradle/verification-metadata.xml
           if-no-commit: info
 

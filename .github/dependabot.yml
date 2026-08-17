@@ -9,9 +9,6 @@ updates:
       time: "04:00"
       timezone: "Europe/Berlin"
 
-    assignees:
-      - "NicDevTV"
-
     open-pull-requests-limit: 5
 
     labels:
@@ -33,5 +30,9 @@ updates:
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    # Dependabot's Actions parser currently rejects the metadata helper workflow.
+    # Its action pins are maintained manually so Gradle PRs remain unblocked.
+    exclude-paths:
+      - ".github/workflows/dependabot-verification-metadata.yml"
     schedule:
       interval: "weekly"

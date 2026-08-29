@@ -9,6 +9,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.Input
@@ -45,6 +46,12 @@ abstract class GenerateApiBaselineReportTask : DefaultTask() {
     @get:Input
     abstract val apiVersion: Property<String>
 
+    @get:Input
+    abstract val packagePrefixes: ListProperty<String>
+
+    @get:Input
+    abstract val packageExcludes: ListProperty<String>
+
     @get:OutputFile
     abstract val reportFile: RegularFileProperty
 
@@ -54,7 +61,11 @@ abstract class GenerateApiBaselineReportTask : DefaultTask() {
         val publicPackageEntries = ZipFile(archive).use { zip ->
             zip.entries().asSequence()
                 .map { it.name }
-                .filter { it.startsWith("tv/nicdev/craftrelay/api/") && it.endsWith(".class") }
+                .filter { entry ->
+                    entry.endsWith(".class")
+                        && packagePrefixes.get().any(entry::startsWith)
+                        && packageExcludes.get().none(entry::startsWith)
+                }
                 .filterNot { it.contains('$') }
                 .sorted()
                 .toList()
@@ -66,7 +77,7 @@ abstract class GenerateApiBaselineReportTask : DefaultTask() {
             appendLine()
             appendLine("Archive SHA-256: `${archive.digest("SHA-256")}`")
             appendLine()
-            appendLine("## API package classes")
+            appendLine("## Public package classes")
             appendLine()
             publicPackageEntries.forEach { appendLine("- `${it.removeSuffix(".class").replace('/', '.')}`") }
         }
@@ -121,7 +132,7 @@ abstract class VerifyRuntimeLicensesTask : DefaultTask() {
                 appendLine("CraftRelay third-party notices")
                 appendLine("===============================")
                 appendLine()
-                appendLine("The following components are embedded in the Paper and Velocity plugin artifacts:")
+                appendLine("The following components are embedded in CraftRelay runtime artifacts:")
                 appendLine()
                 resolved.filterNotNull().forEach { (coordinate, artifact) ->
                     val module = coordinate.substringAfter(':')
@@ -192,6 +203,10 @@ abstract class VerifyReleaseArtifactsTask : DefaultTask() {
     @get:Classpath
     abstract val pluginJars: ConfigurableFileCollection
 
+    @get:InputFiles
+    @get:Classpath
+    abstract val embeddedJars: ConfigurableFileCollection
+
     @TaskAction
     fun verify() {
         val forbiddenPrefixes = listOf(
@@ -200,11 +215,21 @@ abstract class VerifyReleaseArtifactsTask : DefaultTask() {
             "io/lettuce/",
             "io/netty/",
             "tools/jackson/",
+            "com/fasterxml/jackson/",
             "org/snakeyaml/engine/",
             "reactor/",
+            "io/projectreactor/",
             "org/reactivestreams/",
+            "org/jctools/",
+            "redis/clients/",
         )
-        pluginJars.files.sortedBy { it.name }.forEach { archive ->
+        val embeddedOnlyForbiddenPrefixes = listOf(
+            "tv/nicdev/craftrelay/common/",
+            "tv/nicdev/craftrelay/transport/redis/",
+        )
+        val pluginArchives = pluginJars.files
+        val embeddedArchives = embeddedJars.files
+        pluginArchives.sortedBy { it.name }.forEach { archive ->
             if (!archive.isFile) throw GradleException("Missing release artifact: $archive")
             ZipFile(archive).use { zip ->
                 val entries = zip.entries().asSequence().map { it.name }.toList()
@@ -228,6 +253,34 @@ abstract class VerifyReleaseArtifactsTask : DefaultTask() {
                 }
             }
         }
+        embeddedArchives.sortedBy { it.name }.forEach { archive ->
+            if (!archive.isFile) throw GradleException("Missing embedded artifact: $archive")
+            ZipFile(archive).use { zip ->
+                val entries = zip.entries().asSequence().map { it.name }.toList()
+                val forbidden = entries.firstOrNull { entry ->
+                    entry.contains(".gitkeep") || entry.endsWith("Test.class") ||
+                        forbiddenPrefixes.any(entry::startsWith) ||
+                        embeddedOnlyForbiddenPrefixes.any(entry::startsWith)
+                }
+                if (forbidden != null) {
+                    throw GradleException("${archive.name} contains forbidden entry '$forbidden'.")
+                }
+                val hasPublicSdk = entries.any {
+                    it.startsWith("tv/nicdev/craftrelay/embedded/") &&
+                        !it.startsWith("tv/nicdev/craftrelay/embedded/internal/") &&
+                        it.endsWith(".class")
+                }
+                if (!hasPublicSdk) {
+                    throw GradleException("${archive.name} does not contain the public embedded SDK.")
+                }
+                if (entries.none { it == "META-INF/craftrelay/LICENSE.txt" }) {
+                    throw GradleException("${archive.name} does not contain the CraftRelay license.")
+                }
+                if (entries.none { it == "META-INF/craftrelay/THIRD-PARTY-NOTICES.txt" }) {
+                    throw GradleException("${archive.name} does not contain third-party notices.")
+                }
+            }
+        }
     }
 }
 
@@ -242,26 +295,37 @@ abstract class VerifyApiPublicationTask : DefaultTask() {
     @get:Input
     abstract val expectedVersion: Property<String>
 
+    @get:Input
+    abstract val expectedArtifactId: Property<String>
+
+    @get:Input
+    abstract val expectedName: Property<String>
+
+    @get:Input
+    abstract val allowDependencies: Property<Boolean>
+
     @TaskAction
     fun verify() {
         val pom = pomFile.get().asFile.readText(StandardCharsets.UTF_8)
         val required = listOf(
             "<groupId>de.nicdevtv</groupId>",
-            "<artifactId>craftrelay-api</artifactId>",
+            "<artifactId>${expectedArtifactId.get()}</artifactId>",
             "<version>${expectedVersion.get()}</version>",
-            "<name>CraftRelay API</name>",
+            "<name>${expectedName.get()}</name>",
             "<license>",
             "<scm>",
         )
         required.forEach { value ->
             if (value !in pom) throw GradleException("Generated POM is missing '$value'.")
         }
-        if ("<dependencies>" in pom) {
-            throw GradleException("craftrelay-api must not publish runtime dependencies.")
+        if (!allowDependencies.get() && "<dependencies>" in pom) {
+            throw GradleException("${expectedArtifactId.get()} must not publish runtime dependencies.")
         }
         val names = publicationJars.files.map { it.name }
         if (names.none { it.endsWith("-sources.jar") } || names.none { it.endsWith("-javadoc.jar") }) {
-            throw GradleException("API publication is missing sources or JavaDoc JAR.")
+            throw GradleException(
+                "${expectedArtifactId.get()} publication is missing sources or JavaDoc JAR.",
+            )
         }
     }
 }

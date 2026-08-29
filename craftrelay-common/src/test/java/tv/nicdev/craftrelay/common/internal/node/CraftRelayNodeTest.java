@@ -156,6 +156,23 @@ class CraftRelayNodeTest {
     }
 
     @Test
+    void failedPlayerStartupRollsBackTheInstanceLeaseBeforeRetry()
+            throws Exception {
+        TestNetworkPresenceStore store = new TestNetworkPresenceStore();
+        store.failNextPlayerCleanup();
+        CraftRelayNode node = node(new TestNetworkTransport(), store);
+
+        assertThrows(
+                ExecutionException.class,
+                () -> node.start().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS));
+        assertTrue(store.instances().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).isEmpty());
+
+        node.start().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        assertEquals(CraftRelayState.AVAILABLE, node.api().state());
+        node.close().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    @Test
     void lostInstanceLeaseTriggersControlledNodeShutdown() {
         TestNetworkPresenceStore store = new TestNetworkPresenceStore();
         CraftRelayNode node = CraftRelayNodes.create(

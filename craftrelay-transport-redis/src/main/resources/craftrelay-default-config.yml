@@ -1,4 +1,4 @@
-# CraftRelay uses the same schema on Paper and Velocity.
+# CraftRelay uses the same schema for platform adapters and embedded hosts.
 # Every running node needs its own stable ID.
 config-version: 1
 

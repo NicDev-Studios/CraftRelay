@@ -56,8 +56,8 @@ tasks.named<ShadowJar>("shadowJar") {
     archiveBaseName = "craftrelay-example-velocity"
     archiveClassifier = ""
     dependencies {
-        exclude(dependency("de.nicdevtv:craftrelay-api"))
-        exclude(dependency("de.nicdevtv:craftrelay-platform-velocity"))
+        exclude(dependency("tv.nicdev:craftrelay-api"))
+        exclude(dependency("tv.nicdev:craftrelay-platform-velocity"))
     }
 }
 

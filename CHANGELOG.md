@@ -14,6 +14,7 @@ Notable changes are documented here. CraftRelay follows semantic versioning with
 - Paper and Velocity plugins backed by Redis Pub/Sub and token-fenced presence leases.
 - Duplicate player-session protection across independent Velocity proxies.
 - Paper and Velocity example plugins plus a configurable Docker development network.
+- Platform-neutral Embedded SDK for plugins that own their CraftRelay lifecycle.
 - Bounded dispatch queues, request capacity, structured diagnostics, and health snapshots.
 
 ### Security

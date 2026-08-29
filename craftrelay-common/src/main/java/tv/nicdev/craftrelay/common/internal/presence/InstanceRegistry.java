@@ -235,6 +235,49 @@ public final class InstanceRegistry implements InstanceStateProvider {
         }
     }
 
+    /**
+     * Rolls back a node start which failed after this registry acquired its lease.
+     *
+     * <p>Unlike {@link #stop()}, this operation keeps the registry executor and state store
+     * usable so the owning node can retry its start. It is an internal lifecycle hook used only
+     * by the composed node's startup transaction; it is not part of the public API.
+     *
+     * @return completion of the rollback
+     */
+    public CompletableFuture<Void> rollbackFailedNodeStart() {
+        CompletableFuture<Void> inFlight;
+        synchronized (lifecycleLock) {
+            if (state == RegistryState.NEW || !leaseOwned) {
+                return CompletableFuture.completedFuture(null);
+            }
+            if (state == RegistryState.STOPPING || state == RegistryState.STOPPED) {
+                return CompletableFuture.completedFuture(null);
+            }
+            RegistryState previousState = state;
+            state = RegistryState.STOPPING;
+            if (scheduledHeartbeat != null) {
+                scheduledHeartbeat.cancel(false);
+                scheduledHeartbeat = null;
+            }
+            CompletableFuture<Void> activeOperation =
+                    previousState == RegistryState.STARTING && startFuture != null
+                            ? startFuture.handle((ignored, failure) -> null)
+                            : heartbeatFuture.handle((ignored, failure) -> null);
+            inFlight = activeOperation
+                    .thenComposeAsync(ignored -> releaseAndAnnounce(), executor)
+                    .whenCompleteAsync((ignored, failure) -> {
+                        markLeaseReleased();
+                        synchronized (lifecycleLock) {
+                            if (state == RegistryState.STOPPING) {
+                                state = RegistryState.NEW;
+                            }
+                        }
+                        diagnostics.unavailable(DiagnosticComponent.INSTANCE_PRESENCE);
+                    }, executor);
+        }
+        return inFlight;
+    }
+
     @Override
     public CompletableFuture<? extends Collection<NetworkInstance>> instances() {
         return store.instances()

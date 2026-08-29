@@ -1,4 +1,5 @@
 import org.gradle.api.GradleException
+import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.attributes.Usage
@@ -42,6 +43,10 @@ val installableProjects = installableProjectPaths.map(::project)
 val platformProjects = installableProjects.take(2)
 val pluginJarTasks = installableProjects.map { it.tasks.named("shadowJar", Jar::class.java) }
 val pluginJarFiles = files(pluginJarTasks.map { it.flatMap(Jar::getArchiveFile) })
+val embeddedProject = project(":craftrelay-embedded")
+evaluationDependsOn(embeddedProject.path)
+val embeddedJarTask = embeddedProject.tasks.named("shadowJar", Jar::class.java)
+val embeddedJarFile = files(embeddedJarTask.flatMap(Jar::getArchiveFile))
 val releaseRuntimeClasspath = configurations.create("releaseRuntimeClasspath") {
     isCanBeConsumed = false
     isCanBeResolved = true
@@ -56,6 +61,10 @@ dependencies.add(
 dependencies.add(
     releaseRuntimeClasspath.name,
     dependencies.project(":craftrelay-platform-velocity"),
+)
+dependencies.add(
+    releaseRuntimeClasspath.name,
+    dependencies.project(":craftrelay-embedded"),
 )
 val releaseRuntimeArtifacts = releaseRuntimeClasspath.incoming.artifactView {
     componentFilter { it is ModuleComponentIdentifier }
@@ -75,7 +84,12 @@ subprojects {
 }
 
 val cyclonedxOutput = layout.buildDirectory.file("reports/cyclonedx/craftrelay.cdx.json")
-val cyclonedxBom = tasks.named("cyclonedxBom") {
+// Use the direct BOM task for the release bundle. The aggregate task includes every project,
+// including compileOnly platform APIs; the direct task is constrained to the resolved runtime
+// classpath that is actually bundled by the installable artifacts.
+val cyclonedxBom = tasks.named("cyclonedxDirectBom") {
+    gradleStringList("includeConfigs").set(listOf("releaseRuntimeClasspath"))
+    gradleStringList("skipConfigs").set(listOf(".*[Tt]est.*", ".*[Cc]ompileOnly.*"))
     gradleProperty<String>("componentGroup").set(project.group.toString())
     gradleProperty<String>("componentName").set("craftrelay")
     gradleProperty<String>("componentVersion").set(project.version.toString())
@@ -87,7 +101,7 @@ val cyclonedxBom = tasks.named("cyclonedxBom") {
 
 val verifyRuntimeLicenses = tasks.register<VerifyRuntimeLicensesTask>("verifyRuntimeLicenses") {
     group = "verification"
-    description = "Verifies the reviewed SPDX allowlist for embedded runtime dependencies."
+    description = "Verifies the reviewed SPDX allowlist for bundled runtime dependencies."
     policyFile.set(layout.projectDirectory.file("gradle/runtime-licenses.properties"))
     runtimeArtifacts.from(releaseRuntimeArtifacts)
     noticesFile.set(layout.buildDirectory.file("reports/licenses/THIRD-PARTY-NOTICES.txt"))
@@ -115,11 +129,18 @@ pluginJarTasks.forEachIndexed { index, jarTask ->
     }
 }
 
+embeddedJarTask.configure {
+    dependsOn(generateLegalResources)
+    from(generateLegalResources.flatMap(GenerateLegalResourcesTask::outputDirectory))
+}
+
 val verifyReleaseArtifacts = tasks.register<VerifyReleaseArtifactsTask>("verifyReleaseArtifacts") {
     group = "verification"
-    description = "Inspects the four installable plugin JARs for release invariants."
+    description = "Inspects installable plugin and embedded SDK JARs for release invariants."
     dependsOn(pluginJarTasks)
     pluginJars.from(pluginJarFiles)
+    dependsOn(embeddedJarTask)
+    embeddedJars.from(embeddedJarFile)
 }
 
 val apiProject = project(":craftrelay-api")
@@ -133,29 +154,42 @@ val compatibilityBaseline = if (versionParts[0] == 0) {
     "${versionParts[0]}.0.0"
 }
 
-val apiCompatibilityDependency = if (cleanVersion == compatibilityBaseline) {
-    apiProject.tasks.register<GenerateApiBaselineReportTask>("apiBaselineReport") {
-        dependsOn(apiJarTask)
-        apiJar.set(apiJarTask.flatMap { it.archiveFile })
-        apiVersion.set(cleanVersion)
-        reportFile.set(apiProject.layout.buildDirectory.file("reports/api/baseline-$cleanVersion.md"))
+fun registerCompatibility(
+    target: Project,
+    artifactId: String,
+    archiveTask: org.gradle.api.tasks.TaskProvider<Jar>,
+    packageInclude: String,
+    reportName: String,
+): org.gradle.api.tasks.TaskProvider<out Task> {
+    val packagePrefix = packageInclude.removeSuffix(".**")
+    if (cleanVersion == compatibilityBaseline) {
+        return target.tasks.register<GenerateApiBaselineReportTask>("${reportName}BaselineReport") {
+            dependsOn(archiveTask)
+            apiJar.set(archiveTask.flatMap { it.archiveFile })
+            apiVersion.set(cleanVersion)
+            packagePrefixes.set(
+                listOf(packagePrefix.replace('.', '/') + "/"),
+            )
+            packageExcludes.set(listOf(packagePrefix.replace('.', '/') + "/internal/"))
+            reportFile.set(target.layout.buildDirectory.file("reports/api/$reportName-baseline-$cleanVersion.md"))
+        }
     }
-} else {
-    val baseline = apiProject.configurations.create("apiCompatibilityBaseline") {
+    val baseline = target.configurations.create("${reportName}CompatibilityBaseline") {
         isCanBeConsumed = false
         isCanBeResolved = true
         isTransitive = false
     }
-    apiProject.dependencies.add(baseline.name, "de.nicdevtv:craftrelay-api:$compatibilityBaseline")
+    target.dependencies.add(baseline.name, "de.nicdevtv:$artifactId:$compatibilityBaseline")
     @Suppress("UNCHECKED_CAST")
     val taskType = Class.forName("me.champeau.gradle.japicmp.JapicmpTask")
         .asSubclass(Task::class.java) as Class<Task>
-    apiProject.tasks.register("apiCompatibilityCheck", taskType) {
-        dependsOn(apiJarTask)
+    return target.tasks.register("${reportName}CompatibilityCheck", taskType) {
+        dependsOn(archiveTask)
         gradleFileCollection("oldArchives").from(baseline)
-        gradleFileCollection("newArchives").from(apiJarTask.flatMap { it.archiveFile })
+        gradleFileCollection("newArchives").from(archiveTask.flatMap { it.archiveFile })
         gradleFileCollection("oldClasspath").from(baseline)
-        gradleStringList("packageIncludes").set(listOf("tv.nicdev.craftrelay.api.**"))
+        gradleStringList("packageIncludes").set(listOf(packageInclude))
+        gradleStringList("packageExcludes").set(listOf("$packagePrefix.internal.**"))
         gradleProperty<String>("accessModifier").set("public")
         gradleProperty<Boolean>("onlyModified").set(true)
         gradleProperty<Boolean>("failOnModification").set(true)
@@ -163,16 +197,31 @@ val apiCompatibilityDependency = if (cleanVersion == compatibilityBaseline) {
         gradleProperty<Boolean>("includeSynthetic").set(false)
         gradleProperty<Boolean>("ignoreMissingClasses").set(false)
         gradleRegularFile("htmlOutputFile")
-            .set(apiProject.layout.buildDirectory.file("reports/api/compatibility.html"))
+            .set(target.layout.buildDirectory.file("reports/api/$reportName-compatibility.html"))
         gradleRegularFile("mdOutputFile")
-            .set(apiProject.layout.buildDirectory.file("reports/api/compatibility.md"))
+            .set(target.layout.buildDirectory.file("reports/api/$reportName-compatibility.md"))
     }
 }
 
+val apiCompatibilityDependency = registerCompatibility(
+    apiProject,
+    "craftrelay-api",
+    apiJarTask,
+    "tv.nicdev.craftrelay.api.**",
+    "api",
+)
+val embeddedCompatibilityDependency = registerCompatibility(
+    embeddedProject,
+    "craftrelay-embedded",
+    embeddedJarTask,
+    "tv.nicdev.craftrelay.embedded.**",
+    "embedded",
+)
+
 tasks.register("apiCompatibility") {
     group = "verification"
-    description = "Checks public API compatibility or records the first baseline report."
-    dependsOn(apiCompatibilityDependency)
+    description = "Checks public API and embedded SDK compatibility or records first baselines."
+    dependsOn(apiCompatibilityDependency, embeddedCompatibilityDependency)
 }
 
 val verifyApiPublication = tasks.register<VerifyApiPublicationTask>("verifyApiPublication") {
@@ -182,15 +231,39 @@ val verifyApiPublication = tasks.register<VerifyApiPublicationTask>("verifyApiPu
         apiProject.tasks.named("generatePomFileForMavenPublication"),
         apiProject.tasks.named("jar"),
         apiProject.tasks.named("sourcesJar"),
-        apiProject.tasks.named("javadocJar"),
+        apiProject.tasks.named("plainJavadocJar"),
     )
     pomFile.set(apiProject.layout.buildDirectory.file("publications/maven/pom-default.xml"))
     publicationJars.from(
         apiProject.tasks.named("jar", Jar::class.java).flatMap(Jar::getArchiveFile),
         apiProject.tasks.named("sourcesJar", Jar::class.java).flatMap(Jar::getArchiveFile),
-        apiProject.tasks.named("javadocJar", Jar::class.java).flatMap(Jar::getArchiveFile),
+        apiProject.tasks.named("plainJavadocJar"),
     )
     expectedVersion.set(project.version.toString())
+    expectedArtifactId.set("craftrelay-api")
+    expectedName.set("CraftRelay API")
+    allowDependencies.set(false)
+}
+
+val verifyEmbeddedPublication = tasks.register<VerifyApiPublicationTask>("verifyEmbeddedPublication") {
+    group = "verification"
+    description = "Validates the generated Maven publication for craftrelay-embedded."
+    dependsOn(
+        embeddedProject.tasks.named("generatePomFileForMavenPublication"),
+        embeddedJarTask,
+        embeddedProject.tasks.named("sourcesJar"),
+        embeddedProject.tasks.named("plainJavadocJar"),
+    )
+    pomFile.set(embeddedProject.layout.buildDirectory.file("publications/maven/pom-default.xml"))
+    publicationJars.from(
+        embeddedJarTask,
+        embeddedProject.tasks.named("sourcesJar", Jar::class.java),
+        embeddedProject.tasks.named("plainJavadocJar"),
+    )
+    expectedVersion.set(project.version.toString())
+    expectedArtifactId.set("craftrelay-embedded")
+    expectedName.set("CraftRelay Embedded SDK")
+    allowDependencies.set(false)
 }
 
 val releaseBundle = tasks.register<ReleaseBundleTask>("releaseBundle") {
@@ -208,5 +281,11 @@ val releaseBundle = tasks.register<ReleaseBundleTask>("releaseBundle") {
 tasks.register("releaseCheck") {
     group = "verification"
     description = "Runs all checks required before creating a release bundle."
-    dependsOn("apiCompatibility", verifyReleaseArtifacts, verifyRuntimeLicenses, verifyApiPublication)
+    dependsOn(
+        "apiCompatibility",
+        verifyReleaseArtifacts,
+        verifyRuntimeLicenses,
+        verifyApiPublication,
+        verifyEmbeddedPublication,
+    )
 }

@@ -40,7 +40,13 @@ tasks.named<ShadowJar>("shadowJar") {
     append("META-INF/io.netty.versions.properties")
 
     relocate("io.lettuce", "tv.nicdev.craftrelay.internal.lib.lettuce")
+    relocate("redis.clients", "tv.nicdev.craftrelay.internal.lib.redis.clients")
+    relocate("org.jctools", "tv.nicdev.craftrelay.internal.lib.jctools")
     relocate("io.netty", "tv.nicdev.craftrelay.internal.lib.netty")
+    relocate(
+        "com.fasterxml.jackson",
+        "tv.nicdev.craftrelay.internal.lib.jackson.annotations",
+    )
     relocate("tools.jackson", "tv.nicdev.craftrelay.internal.lib.jackson")
     relocate("org.snakeyaml.engine", "tv.nicdev.craftrelay.internal.lib.snakeyaml")
     relocate("reactor", "tv.nicdev.craftrelay.internal.lib.reactor")

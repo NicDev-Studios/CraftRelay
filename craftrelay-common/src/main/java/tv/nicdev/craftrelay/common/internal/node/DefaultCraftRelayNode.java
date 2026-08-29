@@ -120,10 +120,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                         localIdentity,
                         instanceConfig,
                         nodeLease,
-                        localIdentity.instanceType()
-                                        == tv.nicdev.craftrelay.api.model.NetworkInstanceType.PROXY
-                                ? playerRegistry::onlinePlayerCount
-                                : Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
+                        Objects.requireNonNull(onlinePlayerCount, "onlinePlayerCount"),
                         this::handleLeaseLoss,
                         diagnostics);
         customMessaging =
@@ -258,7 +255,8 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
 
     private void completeStart(
             CompletableFuture<Void> operation, Throwable failure) {
-        Throwable completionFailure = failure;
+        Throwable completionFailure = AsyncFailures.unwrapNullable(failure);
+        boolean retryableFailure = false;
         synchronized (lifecycleLock) {
             if (startFuture != operation) {
                 return;
@@ -268,9 +266,7 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
                 diagnostics.healthy(DiagnosticComponent.NODE);
                 diagnostics.healthy(DiagnosticComponent.REQUESTS);
             } else {
-                if (state == NodeState.STARTING) {
-                    state = NodeState.NEW;
-                }
+                retryableFailure = state == NodeState.STARTING;
                 diagnostics.unavailable(DiagnosticComponent.NODE);
                 if (completionFailure == null) {
                     completionFailure =
@@ -281,11 +277,29 @@ final class DefaultCraftRelayNode implements CraftRelayNode {
         }
         if (completionFailure == null) {
             completionDispatcher.complete(operation, null);
-        } else {
-            diagnostics.report(DiagnosticCode.NODE_START_FAILED, completionFailure);
-            completionDispatcher.fail(
-                    operation, AsyncFailures.unwrap(completionFailure));
+            return;
         }
+
+        Throwable startFailure = completionFailure;
+        CompletableFuture<Void> rollback;
+        try {
+            rollback = retryableFailure
+                    ? instanceRegistry.rollbackFailedNodeStart()
+                    : CompletableFuture.completedFuture(null);
+        } catch (Throwable rollbackFailure) {
+            rollback = CompletableFuture.failedFuture(rollbackFailure);
+        }
+        rollback.whenComplete((ignored, rollbackFailure) -> {
+            Throwable combined = AsyncFailures.merge(
+                    startFailure, AsyncFailures.unwrapNullable(rollbackFailure));
+            synchronized (lifecycleLock) {
+                if (state == NodeState.STARTING) {
+                    state = NodeState.NEW;
+                }
+            }
+            diagnostics.report(DiagnosticCode.NODE_START_FAILED, combined);
+            completionDispatcher.fail(operation, combined);
+        });
     }
 
     private Throwable closeRequestSystem() {

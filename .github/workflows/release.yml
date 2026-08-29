@@ -99,7 +99,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
           AUTHORS: ${{ steps.contributors.outputs.authors }}
         run: >-
-          ./gradlew clean build integrationTest devSmoke releaseCheck releaseBundle
+          ./gradlew clean build integrationTest devSmoke embeddedSmoke releaseCheck releaseBundle
           -PcraftrelayVersion="$VERSION"
           -PcraftrelayAuthors="$AUTHORS"
           --no-daemon

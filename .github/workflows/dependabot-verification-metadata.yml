@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - gradle/libs.versions.toml
+      - gradle/wrapper/gradle-wrapper.jar
       - gradle/wrapper/gradle-wrapper.properties
       - gradle/verification-metadata.xml
 
@@ -45,7 +46,7 @@ jobs:
           git cat-file -e "$HEAD_SHA^{commit}"
           while IFS= read -r file; do
             case "$file" in
-              gradle/libs.versions.toml|gradle/wrapper/gradle-wrapper.properties|gradle/verification-metadata.xml)
+              gradle/libs.versions.toml|gradle/wrapper/gradle-wrapper.jar|gradle/wrapper/gradle-wrapper.properties|gradle/verification-metadata.xml)
                 ;;
               *)
                 echo "Unexpected file in Dependabot Gradle PR: $file" >&2

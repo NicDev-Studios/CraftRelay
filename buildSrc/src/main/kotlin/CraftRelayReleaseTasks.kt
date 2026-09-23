@@ -140,7 +140,7 @@ abstract class VerifyRuntimeLicensesTask : DefaultTask() {
                     appendLine("- $coordinate:$version — ${policy.getValue(coordinate)}")
                 }
                 appendLine()
-                appendLine("Full license and notice texts are retained in the plugin JARs under")
+                appendLine("Full license and notice texts are retained in CraftRelay runtime artifacts under")
                 appendLine("META-INF/craftrelay/licenses/. CraftRelay itself is licensed under Apache-2.0.")
             },
             StandardCharsets.UTF_8,

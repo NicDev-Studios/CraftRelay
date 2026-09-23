@@ -263,7 +263,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
                     previousState == RegistryState.STARTING && startFuture != null
                             ? startFuture.handle((ignored, failure) -> null)
                             : heartbeatFuture.handle((ignored, failure) -> null);
-            inFlight = activeOperation
+            stopFuture = activeOperation
                     .thenComposeAsync(ignored -> releaseAndAnnounce(), executor)
                     .whenCompleteAsync((ignored, failure) -> {
                         markLeaseReleased();
@@ -275,7 +275,7 @@ public final class InstanceRegistry implements InstanceStateProvider {
                         diagnostics.unavailable(DiagnosticComponent.INSTANCE_PRESENCE);
                     }, executor);
         }
-        return inFlight;
+        return stopFuture;
     }
 
     @Override

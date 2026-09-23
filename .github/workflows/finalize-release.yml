@@ -143,6 +143,24 @@ jobs:
             local status
             status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --head "$pom")"
             if [[ "$status" == "200" ]]; then
+              local local_publication="$HOME/.m2/repository/de/nicdevtv/$artifact/$version"
+              local remote_publication
+              remote_publication="$(mktemp -d)"
+              trap 'rm -rf "$remote_publication"' RETURN
+              for suffix in pom jar sources.jar javadoc.jar; do
+                local filename="$artifact-$version.$suffix"
+                [[ -f "$local_publication/$filename" ]] || {
+                  echo "Local Maven publication is missing $filename." >&2
+                  exit 1
+                }
+                curl --silent --show-error --fail --location \
+                  --output "$remote_publication/$filename" \
+                  "https://repo1.maven.org/maven2/de/nicdevtv/$artifact/$version/$filename"
+                cmp -- "$local_publication/$filename" "$remote_publication/$filename" || {
+                  echo "Maven Central artifact differs from the local publication: $filename." >&2
+                  exit 1
+                }
+              done
               echo "de.nicdevtv:$artifact:$version already exists on Maven Central."
               return
             fi

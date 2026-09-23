@@ -15,7 +15,11 @@
  */
 package tv.nicdev.craftrelay.embedded.smoke.paper;
 
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -47,7 +51,10 @@ public final class EmbeddedPaperSmokePlugin extends JavaPlugin implements Listen
                     .diagnosticListener(event -> getLogger().fine(event.code()))
                     .build();
         } catch (RuntimeException failure) {
-            getLogger().severe("Embedded CraftRelay configuration could not be loaded.");
+            getLogger().log(
+                    Level.SEVERE,
+                    "Embedded CraftRelay configuration could not be loaded.",
+                    failure);
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -67,7 +74,17 @@ public final class EmbeddedPaperSmokePlugin extends JavaPlugin implements Listen
     public void onDisable() {
         EmbeddedCraftRelayNode current = node;
         if (current != null) {
-            current.stop();
+            try {
+                current.stop().get(10, TimeUnit.SECONDS);
+            } catch (InterruptedException
+                    | ExecutionException
+                    | TimeoutException
+                    | RuntimeException failure) {
+                if (failure instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                getLogger().log(Level.WARNING, "Embedded CraftRelay could not stop cleanly.", failure);
+            }
         }
     }
 

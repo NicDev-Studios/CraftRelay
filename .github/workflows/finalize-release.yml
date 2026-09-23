@@ -95,7 +95,7 @@ jobs:
         with:
           cache-disabled: true
 
-      - name: Build and validate signed API publication
+      - name: Build and validate signed Maven publications
         env:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
@@ -104,7 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          ./gradlew :craftrelay-api:publishToMavenLocal verifyApiPublication \
+          ./gradlew :craftrelay-api:publishToMavenLocal :craftrelay-embedded:publishToMavenLocal \
+            verifyApiPublication verifyEmbeddedPublication \
             -PcraftrelayVersion="${TAG#v}" --no-daemon
           publication="$HOME/.m2/repository/de/nicdevtv/craftrelay-api/$version"
           [[ -f "$publication/craftrelay-api-$version.pom" ]]
@@ -115,41 +116,74 @@ jobs:
             echo "The local API publication contains no GPG signatures." >&2
             exit 1
           }
+          embedded_publication="$HOME/.m2/repository/de/nicdevtv/craftrelay-embedded/$version"
+          [[ -f "$embedded_publication/craftrelay-embedded-$version.pom" ]]
+          [[ -f "$embedded_publication/craftrelay-embedded-$version.jar" ]]
+          [[ -f "$embedded_publication/craftrelay-embedded-$version-sources.jar" ]]
+          [[ -f "$embedded_publication/craftrelay-embedded-$version-javadoc.jar" ]]
+          find "$embedded_publication" -maxdepth 1 -name '*.asc' -print -quit | grep -q . || {
+            echo "The local Embedded SDK publication contains no GPG signatures." >&2
+            exit 1
+          }
 
-      - name: Publish API to Maven Central when absent
+      - name: Publish Maven artifacts to Maven Central when absent
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
           TAG: ${{ inputs.tag }}
-          MAVEN_REPOSITORY_BASE: https://repo1.maven.org/maven2/de/nicdevtv/craftrelay-api
         shell: bash
         run: |
           set -euo pipefail
           version="${TAG#v}"
-          pom="$MAVEN_REPOSITORY_BASE/$version/craftrelay-api-$version.pom"
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --head "$pom")"
-          if [[ "$status" == "200" ]]; then
-            echo "de.nicdevtv:craftrelay-api:$version already exists on Maven Central."
-          elif [[ "$status" == "404" ]]; then
-            ./gradlew :craftrelay-api:publishAndReleaseToMavenCentral \
+          publish_if_absent() {
+            local artifact="$1"
+            local pom="https://repo1.maven.org/maven2/de/nicdevtv/$artifact/$version/$artifact-$version.pom"
+            local status
+            status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --head "$pom")"
+            if [[ "$status" == "200" ]]; then
+              local local_publication="$HOME/.m2/repository/de/nicdevtv/$artifact/$version"
+              local remote_publication
+              remote_publication="$(mktemp -d)"
+              trap 'rm -rf "$remote_publication"' RETURN
+              for suffix in pom jar sources.jar javadoc.jar; do
+                local filename="$artifact-$version.$suffix"
+                [[ -f "$local_publication/$filename" ]] || {
+                  echo "Local Maven publication is missing $filename." >&2
+                  exit 1
+                }
+                curl --silent --show-error --fail --location \
+                  --output "$remote_publication/$filename" \
+                  "https://repo1.maven.org/maven2/de/nicdevtv/$artifact/$version/$filename"
+                cmp -- "$local_publication/$filename" "$remote_publication/$filename" || {
+                  echo "Maven Central artifact differs from the local publication: $filename." >&2
+                  exit 1
+                }
+              done
+              echo "de.nicdevtv:$artifact:$version already exists on Maven Central."
+              return
+            fi
+            [[ "$status" == "404" ]] || {
+              echo "Maven Central returned HTTP $status while checking $artifact." >&2
+              exit 1
+            }
+            ./gradlew ":$artifact:publishAndReleaseToMavenCentral" \
               -PcraftrelayVersion="$version" --no-daemon
             for _ in {1..60}; do
               status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --head "$pom")"
-              [[ "$status" == "200" ]] && exit 0
+              [[ "$status" == "200" ]] && return
               [[ "$status" == "404" ]] || {
-                echo "Maven Central returned HTTP $status while waiting for the publication." >&2
+                echo "Maven Central returned HTTP $status while waiting for $artifact." >&2
                 exit 1
               }
               sleep 20
             done
-            echo "Maven Central did not expose the publication within 20 minutes." >&2
+            echo "Maven Central did not expose $artifact within 20 minutes." >&2
             exit 1
-          else
-            echo "Maven Central returned HTTP $status while checking the publication." >&2
-            exit 1
-          fi
+          }
+          publish_if_absent craftrelay-api
+          publish_if_absent craftrelay-embedded
 
       - name: Publish verified GitHub release
         env:

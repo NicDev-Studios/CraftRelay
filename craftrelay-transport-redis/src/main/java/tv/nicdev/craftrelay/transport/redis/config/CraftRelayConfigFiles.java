@@ -22,7 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 
-/** Shared creation and loading of the platform {@code config.yml}. */
+/** Shared creation and loading of the CraftRelay {@code config.yml}. */
 public final class CraftRelayConfigFiles {
 
     /** Configuration filename inside each platform data directory. */
@@ -36,7 +36,7 @@ public final class CraftRelayConfigFiles {
     /**
      * Creates the default file if needed and loads it strictly.
      *
-     * @param dataDirectory platform-owned plugin data directory
+     * @param dataDirectory owner-managed plugin data directory
      * @return validated configuration
      * @throws IOException if creating or reading the file fails
      */

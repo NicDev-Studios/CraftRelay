@@ -36,6 +36,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -142,12 +143,13 @@ class RedisTransportIntegrationTest {
     void nodesExposeAuthoritativeSortedPresenceAndRecoverStateReads() throws Exception {
         InstancePresenceConfig fastPresence = new InstancePresenceConfig(
                 "craftrelay", Duration.ofMillis(50), Duration.ofMillis(250), 32);
+        AtomicInteger proxyOnlinePlayers = new AtomicInteger();
         CraftRelayNode proxy = newNode(
                 "proxy-eu-1",
                 NetworkInstanceType.PROXY,
                 Optional.of("eu"),
                 fastPresence,
-                () -> 0);
+                proxyOnlinePlayers::get);
         CraftRelayNode firstServer = newNode(
                 "server-eu-1",
                 NetworkInstanceType.SERVER,
@@ -164,6 +166,7 @@ class RedisTransportIntegrationTest {
                             Optional.of("server-eu-1"))
                     .orTimeout(5, TimeUnit.SECONDS)
                     .join();
+            proxyOnlinePlayers.incrementAndGet();
         }
 
         CraftRelayNode lateServer = newNode(

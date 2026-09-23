@@ -16,17 +16,24 @@
 package tv.nicdev.craftrelay.common.internal;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Consumer;
 
-/** Provides the CraftRelay startup banner for platform adapters. */
+/**
+ * Provides the CraftRelay startup banner for platform adapters and embedded hosts.
+ *
+ * <p>The banner deliberately uses printable ASCII only. This keeps its width stable in
+ * Minecraft consoles, Docker log viewers, and Markdown renderers whose fallback fonts do not
+ * agree on the width of Unicode box-drawing characters.
+ */
 public final class CraftRelayStartupBanner {
 
     private static final List<String> LINES = List.of(
-            "   ____            __ _   ____      _",
-            "  / ___|_ __ __ _ / _| |_|  _ \\ ___| | __ _ _   _",
-            " | |   | '__/ _` | |_| __| |_) / _ \\ |/ _` | | | |",
-            " | |___| | | (_| |  _| |_|  _ <  __/ | (_| | |_| |",
-            "  \\____|_|  \\__,_|_|  \\__|_| \\_\\___|_|\\__,_|\\__, |",
-            "                                            |___/");
+            "   ____ ____      _    _____ _____ ____  _____ _        _ __   __",
+            "  / ___|  _ \\    / \\  |  ___|_   _|  _ \\| ____| |      / \\\\ \\ / /",
+            " | |   | |_) |  / _ \\ | |_    | | | |_) |  _| | |     / _ \\\\ V /",
+            " | |___|  _ <  / ___ \\|  _|   | | |  _ <| |___| |___ / ___ \\| |",
+            "  \\____|_| \\_\\/_/   \\_\\_|     |_| |_| \\_\\_____|_____/_/   \\_\\_|");
 
     private CraftRelayStartupBanner() {
     }
@@ -38,5 +45,15 @@ public final class CraftRelayStartupBanner {
      */
     public static List<String> lines() {
         return LINES;
+    }
+
+    /**
+     * Sends every banner line to the supplied platform logger in display order.
+     *
+     * @param sink logger callback
+     */
+    public static void writeTo(Consumer<? super String> sink) {
+        Objects.requireNonNull(sink, "sink");
+        LINES.forEach(sink);
     }
 }

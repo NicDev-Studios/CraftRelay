@@ -77,9 +77,7 @@ public final class VelocityPluginLifecycle {
      * @return startup completion
      */
     public CompletableFuture<Void> start() {
-        for (String bannerLine : CraftRelayStartupBanner.lines()) {
-            logger.info(bannerLine);
-        }
+        CraftRelayStartupBanner.writeTo(logger::info);
         CompletableFuture<Void> startup;
         try {
             CraftRelayRedisConfig settings = CraftRelayConfigFiles.loadOrCreate(dataDirectory);

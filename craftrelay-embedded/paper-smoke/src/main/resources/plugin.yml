@@ -1,0 +1,6 @@
+name: CraftRelayEmbeddedPaperSmoke
+version: "${version}"
+main: tv.nicdev.craftrelay.embedded.smoke.paper.EmbeddedPaperSmokePlugin
+description: Minimal CraftRelay Embedded SDK Paper smoke host
+authors: ${authors}
+api-version: "1.20.6"

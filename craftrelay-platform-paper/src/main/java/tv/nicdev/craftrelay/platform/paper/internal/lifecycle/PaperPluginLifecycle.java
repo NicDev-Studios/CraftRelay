@@ -61,9 +61,7 @@ public final class PaperPluginLifecycle {
 
     /** Starts the node asynchronously. */
     public void start() {
-        for (String bannerLine : CraftRelayStartupBanner.lines()) {
-            plugin.getLogger().info(bannerLine);
-        }
+        CraftRelayStartupBanner.writeTo(plugin.getLogger()::info);
         PaperPlayerCounter playerCounter =
                 new PaperPlayerCounter(plugin.getServer().getOnlinePlayers().size());
         plugin.getServer().getPluginManager().registerEvents(playerCounter, plugin);

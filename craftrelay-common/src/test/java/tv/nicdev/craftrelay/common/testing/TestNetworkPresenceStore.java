@@ -43,6 +43,7 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
 
     private boolean connected;
     private boolean closed;
+    private boolean failNextPlayerCleanup;
     private boolean failNextPlayerRelease;
     private boolean failPlayerRefreshes;
 
@@ -62,6 +63,10 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
 
     public synchronized void failNextPlayerRelease() {
         failNextPlayerRelease = true;
+    }
+
+    public synchronized void failNextPlayerCleanup() {
+        failNextPlayerCleanup = true;
     }
 
     public synchronized void failPlayerRefreshes() {
@@ -230,7 +235,12 @@ public final class TestNetworkPresenceStore implements NetworkPresenceStore {
     }
 
     @Override
-    public CompletableFuture<Void> cleanupExpiredPlayers(int batchSize) {
+    public synchronized CompletableFuture<Void> cleanupExpiredPlayers(int batchSize) {
+        if (failNextPlayerCleanup) {
+            failNextPlayerCleanup = false;
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("simulated player cleanup failure"));
+        }
         return CompletableFuture.completedFuture(null);
     }
 

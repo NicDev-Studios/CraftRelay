@@ -100,6 +100,21 @@ Follow the logs with:
 ./gradlew devLogs
 ```
 
+## Embedded SDK smoke test
+
+The Embedded SDK has a separate disposable topology. It starts one minimal
+Paper host and one minimal Velocity host that contain only their smoke plugin
+and the embedded SDK; no CraftRelay core plugin is installed:
+
+```shell
+./gradlew embeddedSmoke
+```
+
+The task uses the Minecraft and memory values from `docker/.env`, waits for
+both instance leases and SDK ready messages, prints container state and logs on
+failure, and removes its containers and volumes afterwards. It does not change
+the normal `devUp` environment.
+
 ## Stop
 
 ```shell

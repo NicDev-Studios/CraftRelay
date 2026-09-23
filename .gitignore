@@ -2,7 +2,11 @@
 .gradle/
 build/
 docker/.generated/
+docker/.generated-embedded/
 **/build/
+# The buildSrc package below is source code, not a Gradle output directory.
+!buildSrc/src/main/kotlin/tv/nicdev/craftrelay/build/
+!buildSrc/src/main/kotlin/tv/nicdev/craftrelay/build/**
 
 # IntelliJ IDEA
 .idea/
@@ -26,3 +30,6 @@ Thumbs.db
 
 # Local Docker developer overrides
 docker/.env
+
+# Local-only maintainer notes
+docs/maintainer-guide.md

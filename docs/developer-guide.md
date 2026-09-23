@@ -1,8 +1,9 @@
 # CraftRelay Developer Guide
 
-CraftRelay targets Java 21. The public integration surface is
-`craftrelay-api`; platform, Redis, Common, and relocated runtime classes are
-implementation details.
+CraftRelay targets Java 21. Use `craftrelay-api` when the CraftRelay platform
+plugin is installed, or `craftrelay-embedded` when the host plugin owns the
+CraftRelay lifecycle. Platform, Redis, Common, and relocated runtime classes
+remain implementation details.
 
 ## Gradle dependency
 
@@ -13,6 +14,141 @@ dependencies {
     compileOnly("de.nicdevtv:craftrelay-api:0.1.0")
 }
 ```
+
+For a plugin that should own its CraftRelay lifecycle, use the platform-neutral
+Embedded SDK instead of installing a separate CraftRelay plugin:
+
+```kotlin
+dependencies {
+    implementation("de.nicdevtv:craftrelay-embedded:0.1.0")
+}
+```
+
+The host plugin must include the SDK in its own Shadow JAR. Keep the embedded
+configuration in a plugin-owned directory such as `<plugin-data>/craftrelay`
+and use a different stable `instance.id` for every host. Core and Embedded
+nodes must not claim the same prefix and instance ID in the same Redis network.
+The SDK does
+not register Bukkit services or Velocity events, and it does not claim player
+sessions or run `PlayerConnectRequest` automatically.
+
+```java
+EmbeddedCraftRelayNode node = EmbeddedCraftRelay.builder(
+        dataDirectory.resolve("craftrelay"), NetworkInstanceType.SERVER)
+    .onlinePlayerCount(host::onlinePlayerCount)
+    .startupLogger(hostLogger::info)
+    .diagnosticListener(event -> hostLogger.info(event.code()))
+    .build();
+
+node.start().whenComplete((api, failure) -> hostScheduler.execute(() -> {
+    if (failure != null) {
+        hostLogger.error("CraftRelay could not start", failure);
+        return;
+    }
+    api.instances().thenAcceptAsync(this::showInstances, hostScheduler);
+}));
+// During plugin shutdown:
+node.stop();
+```
+
+Here `dataDirectory`, `host`, `hostLogger`, and `hostScheduler` represent the
+host plugin's own services. The optional startup logger prints the CraftRelay
+banner and one short startup line asynchronously; ready, failure, and runtime
+messages remain under the host's control. The SDK never accesses a platform API
+by itself.
+
+### Host-plugin packaging
+
+The SDK is a runtime library, so the host plugin must bundle it in its own
+classifierless Shadow JAR. The SDK does not need a Paper or Velocity plugin
+dependency:
+
+```kotlin
+plugins {
+    id("com.gradleup.shadow") version "9.6.1"
+}
+
+dependencies {
+    implementation("de.nicdevtv:craftrelay-embedded:0.1.0")
+}
+
+tasks.shadowJar {
+    archiveClassifier.set("")
+    minimize.set(false)
+}
+```
+
+Keep the host's platform API as `compileOnly`. Give every host its own
+configuration directory and stable `instance.id`; two nodes must not claim the
+same prefix/ID pair at the same time.
+
+### Paper host
+
+Create the node in `onEnable()` and hand every completion back to Bukkit before
+touching players, commands, or services. The player count supplier must be an
+O(1) atomic value updated by join/quit events:
+
+```java
+private final AtomicInteger online = new AtomicInteger();
+private EmbeddedCraftRelayNode node;
+
+public void onEnable() {
+    online.set(getServer().getOnlinePlayers().size());
+    node = EmbeddedCraftRelay.builder(
+                    getDataFolder().toPath().resolve("craftrelay"),
+                    NetworkInstanceType.SERVER)
+            .onlinePlayerCount(online::get)
+            .startupLogger(getLogger()::info)
+            .build();
+    node.start().whenComplete((api, failure) ->
+            getServer().getScheduler().runTask(this, () -> {
+                if (failure != null) {
+                    getLogger().severe("CraftRelay could not start");
+                    getServer().getPluginManager().disablePlugin(this);
+                }
+            }));
+}
+
+public void onDisable() {
+    if (node != null) {
+        node.stop();
+    }
+}
+```
+
+Use a bounded wait only if the host's synchronous Paper shutdown contract
+requires it. Never wait on a Bukkit event or scheduler thread during normal
+operation.
+
+### Velocity host
+
+Velocity can return its continuation directly from the proxy lifecycle event;
+the event thread is not blocked while Redis starts or stops:
+
+```java
+@Subscribe
+public EventTask onProxyInitialize(ProxyInitializeEvent event) {
+    return EventTask.resumeWhenComplete(node.start());
+}
+
+@Subscribe
+public EventTask onProxyShutdown(ProxyShutdownEvent event) {
+    return EventTask.resumeWhenComplete(node.stop());
+}
+```
+
+Use `server::getPlayerCount` for the embedded proxy's heartbeat. Embedded
+nodes intentionally do not claim player sessions, listen for proxy events, or
+execute `PlayerConnectRequest`; use the full CraftRelay Velocity plugin when
+those features are required.
+
+`start()` and `stop()` are asynchronous and lifecycle-safe. `api()` is empty
+until startup has completed and becomes empty again during shutdown. Future
+callbacks and diagnostic listeners run away from platform I/O threads; route
+any Bukkit, Velocity, player, sender, or audience access back to the platform
+scheduler. A malformed or missing configuration is rejected without exposing
+Redis credentials. Embedded `PROXY` nodes use the supplied online-player count
+for instance heartbeats, while player lookups remain read-only.
 
 Preview patch releases remain compatible within their `0.x` line. Read the
 changelog before moving to a newer preview minor version.

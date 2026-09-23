@@ -4,6 +4,7 @@ dependencies {
     testImplementation(project(":craftrelay-transport-redis"))
     testImplementation(project(":craftrelay-platform-paper"))
     testImplementation(project(":craftrelay-platform-velocity"))
+    testImplementation(project(":craftrelay-embedded"))
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
@@ -24,6 +25,7 @@ tasks.register<Test>("integrationTest") {
     dependsOn(
         ":craftrelay-platform-paper:shadowJar",
         ":craftrelay-platform-velocity:shadowJar",
+        ":craftrelay-embedded:shadowJar",
     )
     testClassesDirs = sourceSets.test.get().output.classesDirs
     classpath = sourceSets.test.get().runtimeClasspath

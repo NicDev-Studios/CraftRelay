@@ -44,6 +44,11 @@ import tv.nicdev.craftrelay.transport.redis.RedisTransportConfig;
  */
 public final class YamlCraftRelayConfigLoader {
 
+    static final String INSTANCE_ID_ENV = "CRAFTRELAY_INSTANCE_ID";
+    static final String INSTANCE_GROUP_ENV = "CRAFTRELAY_INSTANCE_GROUP";
+    static final String REDIS_USERNAME_ENV = "CRAFTRELAY_REDIS_USERNAME";
+    static final String REDIS_PASSWORD_ENV = "CRAFTRELAY_REDIS_PASSWORD";
+
     private static final Pattern SHORT_DURATION =
             Pattern.compile("([1-9][0-9]*)(ms|s|m|h)");
     private static final int CODE_POINT_LIMIT = 1_000_000;
@@ -65,7 +70,20 @@ public final class YamlCraftRelayConfigLoader {
      * @throws IllegalArgumentException if the document is structurally invalid
      */
     public CraftRelayRedisConfig load(Path path) throws IOException {
+        return load(path, System.getenv());
+    }
+
+    /** Loads YAML and applies the supplied environment overrides before validation.
+     *
+     * @param path YAML file
+     * @param environment environment values to apply over YAML settings
+     * @return validated node configuration
+     * @throws IOException if the file cannot be read
+     * @throws IllegalArgumentException if the document or effective values are invalid
+     */
+    CraftRelayRedisConfig load(Path path, Map<String, String> environment) throws IOException {
         Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(environment, "environment");
         Object document;
         try (InputStream input = Files.newInputStream(path)) {
             document = yaml.loadFromInputStream(input);
@@ -84,7 +102,18 @@ public final class YamlCraftRelayConfigLoader {
                 "presence", "platform"));
 
         Map<String, Object> instance = section(root, "instance");
-        requireKeys(instance, "instance", Set.of("id", "group"));
+        requireKnownKeys(instance, "instance", Set.of("id", "group"));
+        String instanceId = environment.containsKey(INSTANCE_ID_ENV)
+                ? environmentText(environment, INSTANCE_ID_ENV)
+                : instanceIdFromYaml(instance);
+        Optional<String> group = environment.containsKey(INSTANCE_GROUP_ENV)
+                ? environmentOptionalText(environment, INSTANCE_GROUP_ENV)
+                : instance.containsKey("group")
+                        ? optionalText(instance, "group")
+                        : Optional.empty();
+        validateInstanceId(instanceId, environment.containsKey(INSTANCE_ID_ENV)
+                ? INSTANCE_ID_ENV
+                : "instance.id");
 
         Map<String, Object> redis = section(root, "redis");
         requireKeys(redis, "redis", Set.of(
@@ -118,14 +147,20 @@ public final class YamlCraftRelayConfigLoader {
                 "duplicate-session-message"));
 
         String prefix = text(messaging, "prefix");
+        Optional<String> redisUsername = environment.containsKey(REDIS_USERNAME_ENV)
+                ? environmentOptionalText(environment, REDIS_USERNAME_ENV)
+                : optionalText(redis, "username");
+        Optional<String> redisPassword = environment.containsKey(REDIS_PASSWORD_ENV)
+                ? Optional.of(environmentText(environment, REDIS_PASSWORD_ENV))
+                : optionalText(redis, "password");
         CraftRelayRedisConfig result = new CraftRelayRedisConfig(
-                text(instance, "id"),
-                optionalText(instance, "group"),
+                instanceId,
+                group,
                 new RedisTransportConfig(
                         text(redis, "host"),
                         integer(redis, "port"),
-                        optionalText(redis, "username"),
-                        optionalText(redis, "password"),
+                        redisUsername,
+                        redisPassword,
                         integer(redis, "database"),
                         bool(redis, "tls"),
                         duration(redis, "connection-timeout")),
@@ -154,10 +189,68 @@ public final class YamlCraftRelayConfigLoader {
         return result;
     }
 
+    /** Reads a required non-blank environment value without including it in errors.
+     *
+     * @param environment process environment snapshot
+     * @param key variable name
+     * @return configured value
+     */
+    private static String environmentText(Map<String, String> environment, String key) {
+        String value = environment.get(key);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(key + " must be set to a non-empty value");
+        }
+        return value;
+    }
+
+    /** Reads an optional environment value, treating blank values as an explicit clear.
+     *
+     * @param environment process environment snapshot
+     * @param key variable name
+     * @return configured non-blank value, or empty when the value is blank
+     */
+    private static Optional<String> environmentOptionalText(
+            Map<String, String> environment, String key) {
+        String value = environment.get(key);
+        if (value == null) {
+            throw new IllegalArgumentException(key + " must not be null");
+        }
+        return value.isBlank() ? Optional.empty() : Optional.of(value);
+    }
+
+    /** Rejects missing, padded, or placeholder instance identities.
+     *
+     * @param value effective instance identity
+     * @param source YAML key or environment variable used to supply the identity
+     */
+    private static void validateInstanceId(String value, String source) {
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(source + " must not be empty");
+        }
+        if (!value.equals(value.strip())) {
+            throw new IllegalArgumentException(source + " must not have surrounding whitespace");
+        }
+        if ("change-me".equalsIgnoreCase(value)) {
+            throw new IllegalArgumentException(source + " must be changed from 'change-me'");
+        }
+    }
+
+    /** Returns a required child section as a string-keyed mapping.
+     *
+     * @param parent parent mapping
+     * @param key child section key
+     * @return child mapping
+     */
     private static Map<String, Object> section(Map<String, Object> parent, String key) {
         return mapping(required(parent, key), key);
     }
 
+    /** Converts a parsed YAML mapping to an immutable string-keyed map.
+     *
+     * @param value parsed YAML value
+     * @param path configuration path used in validation errors
+     * @return immutable mapping
+     */
     private static Map<String, Object> mapping(Object value, String path) {
         if (!(value instanceof Map<?, ?> values)) {
             throw new IllegalArgumentException(path + " must be a mapping");
@@ -172,13 +265,15 @@ public final class YamlCraftRelayConfigLoader {
         return Collections.unmodifiableMap(result);
     }
 
+    /** Validates that a section contains exactly the required keys.
+     *
+     * @param values section values
+     * @param path configuration path used in validation errors
+     * @param allowed required keys
+     */
     private static void requireKeys(
             Map<String, Object> values, String path, Set<String> allowed) {
-        for (String key : values.keySet()) {
-            if (!allowed.contains(key)) {
-                throw new IllegalArgumentException("Unknown configuration key: " + path + '.' + key);
-            }
-        }
+        requireKnownKeys(values, path, allowed);
         for (String key : allowed) {
             if (!values.containsKey(key)) {
                 throw new IllegalArgumentException("Missing configuration key: " + path + '.' + key);
@@ -186,6 +281,39 @@ public final class YamlCraftRelayConfigLoader {
         }
     }
 
+    /** Rejects keys that are not supported in the specified configuration section.
+     *
+     * @param values section values
+     * @param path configuration path used in validation errors
+     * @param allowed supported keys
+     */
+    private static void requireKnownKeys(
+            Map<String, Object> values, String path, Set<String> allowed) {
+        for (String key : values.keySet()) {
+            if (!allowed.contains(key)) {
+                throw new IllegalArgumentException("Unknown configuration key: " + path + '.' + key);
+            }
+        }
+    }
+
+    /** Reads the required YAML instance ID before environment overrides are applied.
+     *
+     * @param instance instance configuration section
+     * @return YAML instance ID
+     */
+    private static String instanceIdFromYaml(Map<String, Object> instance) {
+        if (!instance.containsKey("id")) {
+            throw new IllegalArgumentException("Missing configuration key: instance.id");
+        }
+        return text(instance, "id");
+    }
+
+    /** Returns a required configuration value.
+     *
+     * @param values containing section
+     * @param key required key
+     * @return configured value
+     */
     private static Object required(Map<String, Object> values, String key) {
         if (!values.containsKey(key)) {
             throw new IllegalArgumentException("Missing configuration key: " + key);
@@ -193,6 +321,12 @@ public final class YamlCraftRelayConfigLoader {
         return values.get(key);
     }
 
+    /** Reads a required string field.
+     *
+     * @param values containing section
+     * @param key required field name
+     * @return configured string
+     */
     private static String text(Map<String, Object> values, String key) {
         Object value = required(values, key);
         if (!(value instanceof String text)) {
@@ -201,6 +335,12 @@ public final class YamlCraftRelayConfigLoader {
         return text;
     }
 
+    /** Reads a nullable string field as an optional value.
+     *
+     * @param values containing section
+     * @param key required field name
+     * @return configured string or empty for YAML {@code null}
+     */
     private static Optional<String> optionalText(Map<String, Object> values, String key) {
         Object value = required(values, key);
         if (value == null) {
@@ -212,6 +352,12 @@ public final class YamlCraftRelayConfigLoader {
         return Optional.of(text);
     }
 
+    /** Reads an integer field and rejects fractional or out-of-range numbers.
+     *
+     * @param values containing section
+     * @param key required field name
+     * @return validated 32-bit integer
+     */
     private static int integer(Map<String, Object> values, String key) {
         Object value = required(values, key);
         if (!(value instanceof Number number)) {
@@ -225,6 +371,12 @@ public final class YamlCraftRelayConfigLoader {
         return (int) result;
     }
 
+    /** Reads a boolean field without accepting string or numeric coercions.
+     *
+     * @param values containing section
+     * @param key required field name
+     * @return configured boolean
+     */
     private static boolean bool(Map<String, Object> values, String key) {
         Object value = required(values, key);
         if (!(value instanceof Boolean result)) {
@@ -233,6 +385,12 @@ public final class YamlCraftRelayConfigLoader {
         return result;
     }
 
+    /** Reads an ISO-8601 duration or a short {@code ms}, {@code s}, {@code m}, or {@code h} value.
+     *
+     * @param values containing section
+     * @param key required field name
+     * @return parsed duration
+     */
     private static Duration duration(Map<String, Object> values, String key) {
         String value = text(values, key);
         Matcher matcher = SHORT_DURATION.matcher(value);

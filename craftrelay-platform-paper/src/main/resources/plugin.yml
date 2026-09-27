@@ -3,5 +3,5 @@ version: "${version}"
 main: tv.nicdev.craftrelay.platform.paper.CraftRelayPaperPlugin
 description: Redis-backed Minecraft network synchronization
 authors: ${authors}
-api-version: "1.20.6"
+api-version: "26.2"
 load: STARTUP

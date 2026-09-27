@@ -3,7 +3,7 @@ version: "${version}"
 main: tv.nicdev.craftrelay.example.paper.CraftRelayExamplePaperPlugin
 description: CraftRelay developer integration example
 authors: ${authors}
-api-version: "1.20.6"
+api-version: "26.2"
 depend: [CraftRelay]
 commands:
   craftrelayexample:

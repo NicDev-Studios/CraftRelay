@@ -1,11 +1,19 @@
 # CraftRelay Developer Guide
 
-CraftRelay targets Java 21. Use `craftrelay-api` when the CraftRelay platform
-plugin is installed, or `craftrelay-embedded` when the host plugin owns the
-CraftRelay lifecycle. Platform, Redis, Common, and relocated runtime classes
-remain implementation details.
+CraftRelay emits Java 21 bytecode and targets Paper 26.2 plus Velocity
+4.2.1-SNAPSHOT. Build with JDK 25 to read those platform APIs; the platform
+servers also require Java 25 at runtime. Use `craftrelay-api` when the
+CraftRelay platform plugin is installed, or `craftrelay-embedded` when the
+host plugin owns the CraftRelay lifecycle. Platform, Redis, Common, and
+relocated runtime classes remain implementation details. The Velocity
+`4.2.1-SNAPSHOT` dependency is mutable; dependency verification intentionally
+requires its checksum to be reviewed when the upstream snapshot changes.
 
 ## Gradle dependency
+
+The publication coordinates below are for the planned `0.1.0` preview. That
+version has not been released to Maven Central yet; current source builds use
+`0.1.0-SNAPSHOT`.
 
 Use the API module only:
 
@@ -151,7 +159,10 @@ Redis credentials. Embedded `PROXY` nodes use the supplied online-player count
 for instance heartbeats, while player lookups remain read-only.
 
 Preview patch releases remain compatible within their `0.x` line. Read the
-changelog before moving to a newer preview minor version.
+changelog before moving to a newer preview minor version. Redis Pub/Sub is
+best-effort delivery and is not a durable queue or general-purpose data store.
+For per-service environment overrides and secret handling, see
+[the PoloCloud configuration contract](polocloud.md).
 
 ## Paper
 

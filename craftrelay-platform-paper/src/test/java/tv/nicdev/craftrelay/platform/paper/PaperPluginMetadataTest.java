@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 class PaperPluginMetadataTest {
 
+    /** Verifies the descriptor names the versioned entry point used by the plugin JAR. */
     @Test
     void pluginMetadataContainsExpandedMainClassAndVersion() throws IOException {
         try (var input = getClass().getClassLoader().getResourceAsStream("plugin.yml")) {
@@ -34,13 +35,14 @@ class PaperPluginMetadataTest {
                     "main: tv.nicdev.craftrelay.platform.paper.CraftRelayPaperPlugin"));
             assertTrue(metadata.contains(
                     "version: \"" + System.getProperty("craftrelayVersion") + '"'));
-            assertTrue(metadata.contains("api-version: \"1.20.6\""));
+            assertTrue(metadata.contains("api-version: \"26.2\""));
             assertTrue(metadata.contains("authors: " + expectedYamlAuthors()));
             assertFalse(metadata.contains("${version}"));
             assertFalse(metadata.contains("${authors}"));
         }
     }
 
+    /** Returns the YAML representation expected for the plugin author list. */
     private static String expectedYamlAuthors() {
         return java.util.Arrays.stream(
                         System.getProperty("craftrelayAuthors").split(","))

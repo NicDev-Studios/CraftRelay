@@ -33,12 +33,16 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.net.InetSocketAddress;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
 import tv.nicdev.craftrelay.api.message.PlayerConnectRequest;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
@@ -49,6 +53,7 @@ import tv.nicdev.craftrelay.platform.velocity.internal.player.VelocityPlayerPres
 
 class VelocityPlayerAdaptersTest {
 
+    /** Confirms disconnect releases the same session acquired during login. */
     @Test
     void loginAndDisconnectUseTheSameClaimedSession() throws Exception {
         RecordingPresence presence = new RecordingPresence();
@@ -63,7 +68,7 @@ class VelocityPlayerAdaptersTest {
                 "down",
                 "duplicate");
 
-        await(listener.onLogin(new LoginEvent(player)));
+        await(listener.onLogin(new LoginEvent(player, null)));
         UUID sessionId = presence.connectedSession;
         assertNotNull(sessionId);
 
@@ -74,11 +79,12 @@ class VelocityPlayerAdaptersTest {
         assertEquals(sessionId, presence.disconnectedSession);
     }
 
+    /** Confirms duplicate ownership denies login after returning to Velocity's scheduler. */
     @Test
     void duplicateSessionDeniesLoginAfterReturningToScheduler() throws Exception {
         RecordingPresence presence = new RecordingPresence();
         presence.connectFailure = new PlayerSessionConflictException("active duplicate");
-        LoginEvent event = new LoginEvent(player(UUID.randomUUID(), "Player", null));
+        LoginEvent event = new LoginEvent(player(UUID.randomUUID(), "Player", null), null);
         VelocityPlayerPresenceListener listener = new VelocityPlayerPresenceListener(
                 new Object(),
                 proxyServer(null, null),
@@ -92,6 +98,43 @@ class VelocityPlayerAdaptersTest {
         assertFalse(event.getResult().isAllowed());
     }
 
+    /** Confirms Redis failures deny login without exposing the exception message. */
+    @Test
+    void redisFailureDeniesLoginWithoutLoggingFailureMessage() throws Exception {
+        String syntheticSecret = "synthetic-secret-for-test";
+        RecordingPresence presence = new RecordingPresence();
+        presence.connectFailure = new ApiUnavailableException(syntheticSecret);
+        AtomicReference<String> warning = new AtomicReference<>();
+        Logger logger = dynamicProxy(Logger.class, (proxy, method, arguments) -> {
+            if (method.getName().equals("warn")) {
+                warning.set(Arrays.deepToString(arguments));
+            }
+            if (method.getReturnType() == String.class) {
+                return "test";
+            }
+            if (method.getReturnType() == boolean.class) {
+                return true;
+            }
+            return null;
+        });
+        LoginEvent event = new LoginEvent(player(UUID.randomUUID(), "Player", null), null);
+        VelocityPlayerPresenceListener listener = new VelocityPlayerPresenceListener(
+                new Object(),
+                proxyServer(null, null),
+                presence,
+                new LocalPlayerSessions(),
+                "down",
+                "duplicate",
+                logger);
+
+        await(listener.onLogin(event));
+
+        assertFalse(event.getResult().isAllowed());
+        assertNotNull(warning.get());
+        assertFalse(warning.get().contains(syntheticSecret));
+    }
+
+    /** Confirms connect requests run on the scheduler and use Velocity's async result. */
     @Test
     void connectRequestIsScheduledAndUsesVelocitysAsyncResult() {
         UUID playerId = UUID.randomUUID();
@@ -109,17 +152,24 @@ class VelocityPlayerAdaptersTest {
         assertEquals(1, connectionCalls.get());
     }
 
+    /** Executes an event continuation and waits for its completion in a test.
+     *
+     * @param task event continuation, or {@code null} when the event was not deferred
+     * @throws Exception if the continuation fails or exceeds the test timeout
+     */
     private static void await(EventTask task) throws Exception {
         if (task == null) {
             return;
         }
         CompletableFuture<Void> completed = new CompletableFuture<>();
         task.execute(new Continuation() {
+            /** Completes the waiting test future after successful continuation. */
             @Override
             public void resume() {
                 completed.complete(null);
             }
 
+            /** Propagates a continuation failure to the waiting test future. */
             @Override
             public void resumeWithException(Throwable exception) {
                 completed.completeExceptionally(exception);
@@ -128,6 +178,13 @@ class VelocityPlayerAdaptersTest {
         completed.get(5, TimeUnit.SECONDS);
     }
 
+    /** Creates a minimal player proxy backed by the values needed by these tests.
+     *
+     * @param playerId test player identity
+     * @param username test player name
+     * @param requestBuilder connection request behavior
+     * @return proxy implementing the Velocity player interface
+     */
     private static Player player(
             UUID playerId, String username, ConnectionRequestBuilder requestBuilder) {
         return dynamicProxy(Player.class, (proxy, method, arguments) -> switch (method.getName()) {
@@ -141,6 +198,12 @@ class VelocityPlayerAdaptersTest {
         });
     }
 
+    /** Creates a proxy server whose scheduler runs queued tasks immediately.
+     *
+     * @param player test player returned by lookups
+     * @param server test destination returned by lookups
+     * @return minimal Velocity proxy server
+     */
     private static ProxyServer proxyServer(Player player, RegisteredServer server) {
         Scheduler scheduler = dynamicProxy(
                 Scheduler.class,
@@ -162,6 +225,11 @@ class VelocityPlayerAdaptersTest {
         });
     }
 
+    /** Creates a task builder that runs its action when scheduled.
+     *
+     * @param action test action to execute
+     * @return minimal task builder proxy
+     */
     private static Scheduler.TaskBuilder taskBuilder(Runnable action) {
         return dynamicProxy(
                 Scheduler.TaskBuilder.class,
@@ -175,6 +243,11 @@ class VelocityPlayerAdaptersTest {
                 });
     }
 
+    /** Creates a registered-server proxy with the requested name.
+     *
+     * @param name test server name
+     * @return minimal registered server
+     */
     private static RegisteredServer registeredServer(String name) {
         ServerInfo serverInfo =
                 new ServerInfo(name, InetSocketAddress.createUnresolved("localhost", 25565));
@@ -189,6 +262,12 @@ class VelocityPlayerAdaptersTest {
                 });
     }
 
+    /** Creates a successful connection request and records each connect attempt.
+     *
+     * @param destination destination returned as the attempted connection
+     * @param calls counter incremented when the request is executed
+     * @return minimal connection request builder
+     */
     private static ConnectionRequestBuilder connectionRequest(
             RegisteredServer destination, AtomicInteger calls) {
         ConnectionRequestBuilder.Result result = dynamicProxy(
@@ -217,6 +296,13 @@ class VelocityPlayerAdaptersTest {
                 });
     }
 
+    /** Creates a small test proxy for a platform interface.
+     *
+     * @param <T> platform interface type
+     * @param type interface class
+     * @param handler method behavior for the proxy
+     * @return proxy cast to the requested interface
+     */
     private static <T> T dynamicProxy(Class<T> type, InvocationHandler handler) {
         return type.cast(Proxy.newProxyInstance(
                 type.getClassLoader(), new Class<?>[] {type}, handler));
@@ -229,6 +315,7 @@ class VelocityPlayerAdaptersTest {
         private UUID disconnectedPlayer;
         private UUID disconnectedSession;
 
+        /** Records a session claim or returns the configured failure. */
         @Override
         public CompletableFuture<NetworkPlayer> connect(
                 UUID playerId,
@@ -250,12 +337,14 @@ class VelocityPlayerAdaptersTest {
                     now));
         }
 
+        /** Marks server switching unsupported in this focused test double. */
         @Override
         public CompletableFuture<NetworkPlayer> switchServer(
                 UUID playerId, UUID sessionId, String serverId) {
             throw new UnsupportedOperationException();
         }
 
+        /** Records a successful disconnect for assertion by the test. */
         @Override
         public CompletableFuture<Boolean> disconnect(UUID playerId, UUID sessionId) {
             disconnectedPlayer = playerId;
@@ -263,6 +352,7 @@ class VelocityPlayerAdaptersTest {
             return CompletableFuture.completedFuture(true);
         }
 
+        /** Reports whether the test double currently holds a claimed session. */
         @Override
         public int onlinePlayerCount() {
             return connectedSession == null ? 0 : 1;

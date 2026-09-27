@@ -6,6 +6,7 @@ import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.javadoc.Javadoc
 import org.gradle.api.tasks.testing.Test
 import org.gradle.jvm.toolchain.JavaLanguageVersion
+import org.gradle.api.attributes.java.TargetJvmVersion
 import tv.nicdev.craftrelay.build.DockerSmokeTask
 import tv.nicdev.craftrelay.build.EmbeddedSmokeTask
 import tv.nicdev.craftrelay.build.GenerateDockerTopologyTask
@@ -71,7 +72,7 @@ subprojects {
 
     extensions.configure<JavaPluginExtension> {
         toolchain {
-            languageVersion = JavaLanguageVersion.of(21)
+            languageVersion = JavaLanguageVersion.of(25)
         }
 
         withSourcesJar()
@@ -82,8 +83,32 @@ subprojects {
         }
     }
 
+    if (project.path in setOf(
+            ":craftrelay-platform-paper",
+            ":craftrelay-platform-velocity",
+            ":craftrelay-example-plugin:paper",
+            ":craftrelay-example-plugin:velocity",
+            ":craftrelay-embedded:paper-smoke",
+            ":craftrelay-embedded:velocity-smoke",
+        )) {
+        configurations.matching {
+            it.name in setOf(
+                "compileClasspath",
+                "testCompileClasspath",
+                "testRuntimeClasspath",
+                "annotationProcessor",
+            )
+        }.configureEach {
+            // Platform API artifacts for the supported server versions declare JVM 25 variants.
+            // Resolve those with JDK 25 while JavaCompile below still emits Java 21 bytecode.
+            attributes.attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25)
+        }
+    }
+
     tasks.withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
+        // Paper 26.2 and Velocity 4.2.1 APIs are built for Java 25. Compile with that JDK
+        // while preserving Java 21-compatible class files for CraftRelay itself.
         options.release = 21
         options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
     }
@@ -158,7 +183,7 @@ val generateDockerTopology = tasks.register<GenerateDockerTopologyTask>("generat
     description = "Generates the Docker topology configured by docker/.env."
     templateDirectory.set(layout.projectDirectory.dir("docker/templates"))
     defaultEnvironmentFile.set(dockerDefaultEnvironmentFile)
-    environmentFile.set(dockerEnvironmentFile)
+    environmentFile.set(activeDockerEnvironmentFile)
     outputDirectory.set(dockerGeneratedDirectory)
     pluginVersion.set(project.version.toString())
 }

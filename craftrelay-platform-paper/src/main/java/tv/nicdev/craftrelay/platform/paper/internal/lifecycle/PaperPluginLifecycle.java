@@ -106,15 +106,14 @@ public final class PaperPluginLifecycle {
             shutdown.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException failure) {
             Thread.currentThread().interrupt();
-            plugin.getLogger().log(Level.WARNING, "CraftRelay shutdown was interrupted", failure);
+            plugin.getLogger().warning("CraftRelay shutdown was interrupted");
         } catch (ExecutionException failure) {
             plugin.getLogger().warning(
                     "CraftRelay shutdown failed ("
                             + AsyncFailures.unwrap(failure).getClass().getName()
                             + ')');
         } catch (TimeoutException failure) {
-            plugin.getLogger().log(
-                    Level.WARNING, "CraftRelay shutdown exceeded " + timeout, failure);
+            plugin.getLogger().warning("CraftRelay shutdown exceeded " + timeout);
         }
     }
 
@@ -127,6 +126,11 @@ public final class PaperPluginLifecycle {
         return apiService.api();
     }
 
+    /**
+     * Completes startup on Paper's main thread and closes the node if scheduling fails.
+     *
+     * @param failure asynchronous node startup failure, if any
+     */
     private void completeStartOnServerThread(Throwable failure) {
         try {
             plugin.getServer()
@@ -139,11 +143,17 @@ public final class PaperPluginLifecycle {
             }
             plugin.getLogger().log(
                     Level.SEVERE,
-                    "Could not finish CraftRelay startup on the server thread",
-                    schedulingFailure);
+                    "Could not finish CraftRelay startup on the server thread ("
+                            + schedulingFailure.getClass().getName()
+                            + ')');
         }
     }
 
+    /**
+     * Publishes the API after successful startup or disables the plugin on failure.
+     *
+     * @param failure asynchronous node startup failure, if any
+     */
     private void completeStart(Throwable failure) {
         CraftRelayNode current = node;
         if (stopping.get() || !plugin.isEnabled()) {
@@ -165,6 +175,7 @@ public final class PaperPluginLifecycle {
         plugin.getLogger().info("CraftRelay is available as instance " + settings.instanceId());
     }
 
+    /** Logs a sanitized diagnostic event at its configured severity. */
     private void reportDiagnostic(DiagnosticEvent event) {
         Level level = switch (event.code().severity()) {
             case INFO -> Level.INFO;

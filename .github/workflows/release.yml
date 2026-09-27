@@ -16,9 +16,6 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
     outputs:
       version: ${{ steps.version.outputs.value }}
       prerelease: ${{ steps.version.outputs.prerelease }}
@@ -28,6 +25,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Validate workflow syntax
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+
+      - name: Audit workflow security
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          inputs: .github/workflows
+          collect: workflows
+          advanced-security: false
 
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
@@ -79,11 +86,11 @@ jobs:
           fi
           echo "authors=$authors" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Java 21
+      - name: Set up Java 25
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
@@ -132,21 +139,6 @@ jobs:
           (cd "$second" && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/second.sha256"
           diff -u "$RUNNER_TEMP/first.sha256" "$RUNNER_TEMP/second.sha256"
 
-      - name: Attest release assets
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: build/release/${{ steps.version.outputs.value }}/*
-
-      - name: Attest plugin SBOM
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: |
-            build/release/${{ steps.version.outputs.value }}/craftrelay-platform-paper-${{ steps.version.outputs.value }}.jar
-            build/release/${{ steps.version.outputs.value }}/craftrelay-platform-velocity-${{ steps.version.outputs.value }}.jar
-            build/release/${{ steps.version.outputs.value }}/craftrelay-example-paper-${{ steps.version.outputs.value }}.jar
-            build/release/${{ steps.version.outputs.value }}/craftrelay-example-velocity-${{ steps.version.outputs.value }}.jar
-          sbom-path: build/release/${{ steps.version.outputs.value }}/craftrelay-${{ steps.version.outputs.value }}.cdx.json
-
       - name: Upload release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -166,9 +158,42 @@ jobs:
             **/build/reports/api/
             build/reports/licenses/
           if-no-files-found: warn
+          retention-days: 14
+
+  attest:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle
+          path: build/release/${{ needs.preflight.outputs.version }}
+
+      - name: Attest release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: build/release/${{ needs.preflight.outputs.version }}/*
+
+      - name: Attest plugin SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            build/release/${{ needs.preflight.outputs.version }}/craftrelay-platform-paper-${{ needs.preflight.outputs.version }}.jar
+            build/release/${{ needs.preflight.outputs.version }}/craftrelay-platform-velocity-${{ needs.preflight.outputs.version }}.jar
+            build/release/${{ needs.preflight.outputs.version }}/craftrelay-example-paper-${{ needs.preflight.outputs.version }}.jar
+            build/release/${{ needs.preflight.outputs.version }}/craftrelay-example-velocity-${{ needs.preflight.outputs.version }}.jar
+          sbom-path: build/release/${{ needs.preflight.outputs.version }}/craftrelay-${{ needs.preflight.outputs.version }}.cdx.json
 
   publish-draft:
-    needs: preflight
+    needs: [preflight, attest]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -1,18 +1,18 @@
-name: Update Dependabot verification metadata
+name: Resolve Dependabot verification metadata
 
 on:
-  pull_request_target: # zizmor: ignore[dangerous-triggers] -- guarded to same-repository Dependabot PRs and never runs arbitrary project code
+  pull_request:
     types: [opened, synchronize, reopened]
     paths:
       - gradle/libs.versions.toml
       - gradle/wrapper/gradle-wrapper.jar
       - gradle/wrapper/gradle-wrapper.properties
-      - gradle/verification-metadata.xml
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
-  group: dependabot-verification-${{ github.event.pull_request.number }}
+  group: dependabot-verification-resolve-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -24,8 +24,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    outputs:
-      metadata_changed: ${{ steps.metadata.outputs.changed }}
     steps:
       - name: Check out Dependabot revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -46,7 +44,10 @@ jobs:
           git cat-file -e "$HEAD_SHA^{commit}"
           while IFS= read -r file; do
             case "$file" in
-              gradle/libs.versions.toml|gradle/wrapper/gradle-wrapper.jar|gradle/wrapper/gradle-wrapper.properties|gradle/verification-metadata.xml)
+              gradle/libs.versions.toml|gradle/wrapper/gradle-wrapper.jar|gradle/wrapper/gradle-wrapper.properties)
+                ;;
+              gradle/verification-metadata.xml)
+                # The privileged apply workflow reconciles this data with trusted main metadata.
                 ;;
               *)
                 echo "Unexpected file in Dependabot Gradle PR: $file" >&2
@@ -55,11 +56,11 @@ jobs:
             esac
           done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
 
-      - name: Set up Java 21
+      - name: Set up Java 25
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "25"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
@@ -72,104 +73,39 @@ jobs:
           python3 scripts/generate-dependency-verification-project.py "$SEED_PROJECT"
           ./gradlew -p "$SEED_PROJECT" resolveVerificationDependencies \
             --no-daemon --write-verification-metadata sha256
-          python3 scripts/merge-gradle-verification-metadata.py \
-            gradle/verification-metadata.xml \
-            "$SEED_PROJECT/gradle/verification-metadata.xml"
 
-      - name: Check generated metadata
-        id: metadata
+      - name: Prepare generated metadata artifact
+        env:
+          SEED_PROJECT: ${{ runner.temp }}/dependency-verification-seed
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- gradle/verification-metadata.xml; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git diff --quiet -- . ':(exclude)gradle/verification-metadata.xml' || {
-            echo "Gradle changed files other than gradle/verification-metadata.xml." >&2
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || {
+            echo "Resolver checkout does not match the pull request source revision." >&2
+            exit 1
+          }
+          git diff --quiet -- || {
+            echo "Dependency resolution modified the checked-out Dependabot revision." >&2
             git status --short >&2
             exit 1
           }
-          python3 - <<'PY'
+          python3 - "$SEED_PROJECT/gradle/verification-metadata.xml" <<'PY'
+          import sys
           import xml.etree.ElementTree as ET
-          ET.parse("gradle/verification-metadata.xml")
+          ET.parse(sys.argv[1])
           PY
-          echo "changed=true" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/dependency-verification-artifact"
+          cp "$SEED_PROJECT/gradle/verification-metadata.xml" \
+            "$RUNNER_TEMP/dependency-verification-artifact/verification-metadata.xml"
+          printf '%s\n' "$SOURCE_SHA" \
+            > "$RUNNER_TEMP/dependency-verification-artifact/resolver-source-sha.txt"
 
-      - name: Upload generated metadata
-        if: steps.metadata.outputs.changed == 'true'
+      - name: Upload dependency verification seed
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: dependabot-verification-metadata
-          path: gradle/verification-metadata.xml
+          name: dependency-verification-seed
+          path: ${{ runner.temp }}/dependency-verification-artifact/*
           if-no-files-found: error
-
-  commit:
-    needs: resolve
-    if: needs.resolve.outputs.metadata_changed == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      actions: write
-    steps:
-      - name: Check out the exact Dependabot revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Download generated metadata
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: dependabot-verification-metadata
-          path: generated-metadata
-
-      - name: Apply and commit metadata only
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]] || {
-            echo "Dependabot PR changed while metadata was being generated; refusing to push." >&2
-            exit 1
-          }
-          metadata="$(find generated-metadata -type f -name verification-metadata.xml -print -quit)"
-          [[ -n "$metadata" ]] || {
-            echo "Generated verification metadata was not found." >&2
-            exit 1
-          }
-          cp "$metadata" gradle/verification-metadata.xml
-          python3 - <<'PY'
-          import xml.etree.ElementTree as ET
-          ET.parse("gradle/verification-metadata.xml")
-          PY
-          files="$(git diff --name-only)"
-          [[ "$files" == "gradle/verification-metadata.xml" ]] || {
-            echo "The metadata update changed an unexpected file:" >&2
-            git diff --name-only >&2
-            exit 1
-          }
-          git diff --check
-          if git diff --quiet -- gradle/verification-metadata.xml; then
-            echo "Verification metadata is already up to date."
-            exit 0
-          fi
-      - name: Create verified metadata commit
-        uses: iarekylew00t/verified-bot-commit@42a042b0407248f3c0acac00c389e729e3476e86 # v2.3.5
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          ref: ${{ github.event.pull_request.head.ref }}
-          message: "chore(deps): update Gradle verification metadata"
-          files: gradle/verification-metadata.xml
-          if-no-commit: info
-
-      - name: Re-run build for verified metadata commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ github.event.pull_request.head.ref }}
-        shell: bash
-        run: gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          retention-days: 1

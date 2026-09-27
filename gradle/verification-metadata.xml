@@ -3753,6 +3753,17 @@
             <sha256 value="bf97e74c73bc3d535bc059ed3e1eb25053d75d598f62b4e10b6faecc87df2cb3" origin="Verified against Maven Central"/>
          </artifact>
       </component>
+      <component group="org.apache.groovy" name="groovy-ant" version="4.0.32">
+         <artifact name="groovy-ant-4.0.32.jar">
+            <sha256 value="f54b6f3b28f636981c1eaaa66338c0a73fa8be8376ebc8e33962e7212c30e810" origin="Verified against Maven Central"/>
+         </artifact>
+         <artifact name="groovy-ant-4.0.32.module">
+            <sha256 value="e28d712ddaf29ca55f42a18d63cb593aedf21f94ca1afaba7ab5d996ad04ae49" origin="Verified against Maven Central"/>
+         </artifact>
+         <artifact name="groovy-ant-4.0.32.pom">
+            <sha256 value="e20db7cc2b56693d58f7a901aa92bfe3e811e4951cbb3f502e6812485b1bc4da" origin="Verified against Maven Central"/>
+         </artifact>
+      </component>
       <component group="org.apache.groovy" name="groovy-bom" version="4.0.32">
          <artifact name="groovy-bom-4.0.32.module">
             <sha256 value="d3c40b2cd918c1276fe234094d4512317261a5f0bfc80f679e43c761a004e01e" origin="Verified against Maven Central"/>

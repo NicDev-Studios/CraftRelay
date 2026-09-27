@@ -20,6 +20,7 @@ import java.io.InputStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Objects;
 
 /** Shared creation and loading of the CraftRelay {@code config.yml}. */
@@ -41,13 +42,19 @@ public final class CraftRelayConfigFiles {
      * @throws IOException if creating or reading the file fails
      */
     public static CraftRelayRedisConfig loadOrCreate(Path dataDirectory) throws IOException {
+        return loadOrCreate(dataDirectory, System.getenv());
+    }
+
+    static CraftRelayRedisConfig loadOrCreate(
+            Path dataDirectory, Map<String, String> environment) throws IOException {
         Objects.requireNonNull(dataDirectory, "dataDirectory");
+        Objects.requireNonNull(environment, "environment");
         Files.createDirectories(dataDirectory);
         Path configPath = dataDirectory.resolve(CONFIG_FILE_NAME);
         if (Files.notExists(configPath)) {
             copyDefault(configPath);
         }
-        return new YamlCraftRelayConfigLoader().load(configPath);
+        return new YamlCraftRelayConfigLoader().load(configPath, environment);
     }
 
     private static void copyDefault(Path target) throws IOException {

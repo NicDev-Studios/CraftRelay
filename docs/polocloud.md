@@ -9,16 +9,16 @@ particular built-in variable for an instance name.
 
 | Variable | Required | Behavior |
 | --- | --- | --- |
-| `CRAFTRELAY_INSTANCE_ID` | Yes for dynamic services | Overrides `instance.id`. Must be non-empty, must not be `change-me`, and must be unique among every live CraftRelay node using the same Redis prefix. |
+| `CRAFTRELAY_INSTANCE_ID` | Yes for dynamic services | Overrides `instance.id`. Must be non-empty, must not be `change-me`, and must be unique among every live CraftRelay node using the same Redis database/keyspace and prefix. |
 | `CRAFTRELAY_INSTANCE_GROUP` | No | Overrides `instance.group`. If unset, YAML is used; if set to an empty value, the group is cleared. |
 | `CRAFTRELAY_REDIS_USERNAME` | No | Overrides `redis.username`. If unset, YAML is used; if set to an empty value, the username is cleared. |
 | `CRAFTRELAY_REDIS_PASSWORD` | Only when Redis uses a password | Overrides `redis.password`. Supply it from the orchestrator's secret facility. Empty values are rejected. |
 
 The environment is read independently by each Paper or Velocity process. The
 orchestrator must provide a different `CRAFTRELAY_INSTANCE_ID` to each live
-service. Redis lease claims reject an ID that is already active, including an
-ID duplicated across a proxy and a backend. After a process disappears, its
-lease expires using the configured TTL.
+service. Within the same Redis database/keyspace and prefix, lease claims reject
+an ID that is already active, including an ID duplicated across a proxy and a
+backend. After a process disappears, its lease expires using the configured TTL.
 
 ## Example service values
 
@@ -34,8 +34,9 @@ operator's contract, not PoloCloud-native variable names.
 | proxy 2 | `proxy-eu-2` | `eu` |
 
 For dynamically numbered services, have the orchestrator assign an ID that is
-unique across all concurrently running proxies and backends. Keep all nodes
-on the same CraftRelay Redis prefix and the same shared Redis service.
+unique across all concurrently running proxies and backends. Keep all nodes on
+the same CraftRelay Redis prefix, Redis database, and shared Redis service so
+the lease claims see the same keyspace.
 
 ## Static YAML and secrets
 

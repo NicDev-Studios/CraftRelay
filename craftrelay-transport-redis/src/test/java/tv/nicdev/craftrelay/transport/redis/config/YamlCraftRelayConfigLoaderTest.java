@@ -170,7 +170,8 @@ class YamlCraftRelayConfigLoaderTest {
     void createsDocumentedDefaultWithoutSilentlyStarting() throws IOException {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> CraftRelayConfigFiles.loadOrCreate(temporaryDirectory.resolve("plugin")));
+                () -> CraftRelayConfigFiles.loadOrCreate(
+                        temporaryDirectory.resolve("plugin"), Map.of()));
         Path config = temporaryDirectory.resolve("plugin").resolve("config.yml");
         assertTrue(Files.isRegularFile(config));
         assertTrue(Files.readString(config).contains("id: \"change-me\""));

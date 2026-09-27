@@ -76,11 +76,26 @@ jobs:
             echo "Dependabot PR has an invalid head commit SHA." >&2
             exit 1
           }
-          mapfile -t artifact_files < <(find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -type f -print)
-          [[ "${#artifact_files[@]}" -eq 1 ]]
-          [[ "$(basename "${artifact_files[0]}")" == "verification-metadata.xml" ]]
-          [[ ! -L "${artifact_files[0]}" ]]
-          python3 - "${artifact_files[0]}" <<'PY'
+          mapfile -t artifact_entries < <(find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -print)
+          [[ "${#artifact_entries[@]}" -eq 2 ]]
+          metadata_file="$ARTIFACT_DIRECTORY/verification-metadata.xml"
+          source_sha_file="$ARTIFACT_DIRECTORY/resolver-source-sha.txt"
+          [[ -f "$metadata_file" && ! -L "$metadata_file" ]]
+          [[ -f "$source_sha_file" && ! -L "$source_sha_file" ]]
+          [[ "$(wc -c < "$source_sha_file")" -eq 41 ]] || {
+            echo "Resolver artifact source SHA has an unexpected size." >&2
+            exit 1
+          }
+          resolver_source_sha="$(<"$source_sha_file")"
+          [[ "$resolver_source_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Resolver artifact has an invalid source commit SHA." >&2
+            exit 1
+          }
+          [[ "$pr_head_sha" == "$resolver_source_sha" ]] || {
+            echo "Dependabot PR changed after metadata was resolved; refusing to apply the artifact." >&2
+            exit 1
+          }
+          python3 - "$metadata_file" <<'PY'
           from pathlib import Path
           import sys
           import xml.etree.ElementTree as ET
@@ -96,7 +111,7 @@ jobs:
               raise SystemExit("Unexpected dependency verification metadata root element.")
           PY
 
-          cp "${artifact_files[0]}" "$OUTPUT_FILE"
+          cp "$metadata_file" "$OUTPUT_FILE"
           {
             echo "number=$pr_number"
             echo "head_sha=$pr_head_sha"

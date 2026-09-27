@@ -79,6 +79,10 @@ public final class PlayerConnectRequestListener {
         server.getScheduler().buildTask(plugin, () -> execute(request)).schedule();
     }
 
+    /** Checks the local session and dispatches a valid request to its registered server.
+     *
+     * @param request request already queued on Velocity's scheduler
+     */
     private void execute(PlayerConnectRequest request) {
         if (sessions.find(request.playerId()).isEmpty()) {
             return;

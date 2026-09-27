@@ -203,6 +203,11 @@ public final class VelocityPlayerPresenceListener {
                 .schedule();
     }
 
+    /** Runs a continuation on Velocity's scheduler and exposes action or scheduling failures.
+     *
+     * @param action event-state mutation to run on the scheduler
+     * @return completion of the scheduled action
+     */
     private CompletableFuture<Void> runOnScheduler(Runnable action) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
         try {
@@ -222,6 +227,12 @@ public final class VelocityPlayerPresenceListener {
         return completion;
     }
 
+    /** Logs mutation failures without exception messages that could expose connection details.
+     *
+     * @param operation presence operation that failed
+     * @param playerId affected player
+     * @param failure asynchronous failure, if any
+     */
     private void logMutationFailure(
             String operation, UUID playerId, Throwable failure) {
         if (failure != null) {
@@ -234,6 +245,12 @@ public final class VelocityPlayerPresenceListener {
         }
     }
 
+    /** Denies the login with the configured message and logs only the failure type.
+     *
+     * @param event login event to deny
+     * @param player player whose session claim failed
+     * @param failure session-claim failure
+     */
     private void denyLogin(LoginEvent event, Player player, Throwable failure) {
         Throwable cause = AsyncFailures.unwrap(failure);
         String message = cause instanceof PlayerSessionConflictException
@@ -246,6 +263,12 @@ public final class VelocityPlayerPresenceListener {
                 cause.getClass().getName());
     }
 
+    /** Validates a non-blank login message supplied by plugin configuration.
+     *
+     * @param value configured message
+     * @param name setting name used in validation errors
+     * @return the unchanged message
+     */
     private static String requireText(String value, String name) {
         Objects.requireNonNull(value, name);
         if (value.isBlank()) {

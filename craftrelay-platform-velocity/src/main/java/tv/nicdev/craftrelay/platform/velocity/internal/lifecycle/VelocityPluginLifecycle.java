@@ -152,6 +152,12 @@ public final class VelocityPluginLifecycle {
         return Optional.ofNullable(publicApi.get());
     }
 
+    /** Publishes the API on Velocity's scheduler and fires the ready event.
+     *
+     * @param current started node
+     * @param connectListener listener for built-in connect requests
+     * @return completion of API publication and ready-event dispatch
+     */
     private CompletableFuture<Void> publishApiReady(
             CraftRelayNode current, PlayerConnectRequestListener connectListener) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
@@ -183,6 +189,7 @@ public final class VelocityPluginLifecycle {
         return completion;
     }
 
+    /** Clears published state, closes the node, and unregisters its listener after startup fails. */
     private void closeAfterFailedStart() {
         publicApi.set(null);
         closeSubscription();
@@ -193,6 +200,7 @@ public final class VelocityPluginLifecycle {
         schedule(this::unregisterPresenceListener, null);
     }
 
+    /** Closes and clears the active player-connect subscription, if present. */
     private void closeSubscription() {
         Subscription current = connectSubscription;
         connectSubscription = null;
@@ -201,6 +209,7 @@ public final class VelocityPluginLifecycle {
         }
     }
 
+    /** Removes the registered presence listener and clears its reference. */
     private void unregisterPresenceListener() {
         VelocityPlayerPresenceListener current = presenceListener.getAndSet(null);
         if (current != null) {
@@ -208,6 +217,11 @@ public final class VelocityPluginLifecycle {
         }
     }
 
+    /** Schedules lifecycle work and reports scheduling failures to the caller when possible.
+     *
+     * @param action work to run on Velocity's scheduler
+     * @param completion future to fail if scheduling is rejected, or {@code null} for cleanup
+     */
     private void schedule(Runnable action, CompletableFuture<Void> completion) {
         try {
             server.getScheduler().buildTask(plugin, action).schedule();
@@ -222,6 +236,7 @@ public final class VelocityPluginLifecycle {
         }
     }
 
+    /** Logs a sanitized diagnostic event at its configured severity. */
     private void reportDiagnostic(DiagnosticEvent event) {
         switch (event.code().severity()) {
             case INFO -> logger.info(event.logMessage());

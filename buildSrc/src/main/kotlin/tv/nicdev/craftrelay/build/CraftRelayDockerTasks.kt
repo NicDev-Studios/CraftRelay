@@ -22,6 +22,11 @@ import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
 
+/** Parses non-comment `KEY=VALUE` entries from a local environment file.
+ *
+ * @param path environment file path
+ * @return values keyed by their environment variable names
+ */
 private fun readEnvironment(path: Path): Map<String, String> =
     Files.readAllLines(path).mapNotNull { line ->
         val value = line.trim()
@@ -36,6 +41,11 @@ private fun readEnvironment(path: Path): Map<String, String> =
         }
     }.toMap()
 
+/** Copies a template tree to its generated configuration directory.
+ *
+ * @param source template directory
+ * @param target destination directory
+ */
 private fun copyDirectory(source: Path, target: Path) {
     Files.walk(source).use { paths ->
         paths.forEach { path ->
@@ -49,6 +59,10 @@ private fun copyDirectory(source: Path, target: Path) {
     }
 }
 
+/** Removes a previously generated topology before recreating it.
+ *
+ * @param directory generated directory to remove
+ */
 private fun deleteDirectory(directory: Path) {
     if (Files.exists(directory)) {
         Files.walk(directory).use { paths ->
@@ -75,6 +89,7 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
     @get:Input
     abstract val pluginVersion: Property<String>
 
+    /** Generates the configurable Paper and Velocity Docker topology. */
     @TaskAction
     fun generate() {
         val templates = templateDirectory.get().asFile.toPath()
@@ -124,6 +139,13 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
         Files.copy(configuredEnvironment.toPath(), output.resolve(".env"), StandardCopyOption.REPLACE_EXISTING)
     }
 
+    /** Parses and bounds an integer topology setting, using its default when absent.
+     *
+     * @param name environment key
+     * @param default value used when the key is absent
+     * @param range accepted inclusive range
+     * @return validated setting value
+     */
     private fun Map<String, String>.readInt(name: String, default: Int, range: IntRange): Int {
         val raw = get(name) ?: return default
         val value = raw.toIntOrNull()
@@ -134,10 +156,23 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
         return value
     }
 
+    /** Replaces a template value in a generated configuration file.
+     *
+     * @param path file to update
+     * @param old template value to replace
+     * @param new configured value
+     */
     private fun replace(path: Path, old: String, new: String) {
         Files.writeString(path, Files.readString(path).replace(old, new))
     }
 
+    /** Renders Compose services for the configured number of proxy and backend nodes.
+     *
+     * @param paperCount backend count
+     * @param velocityCount proxy count
+     * @param firstVelocityPort first published proxy port
+     * @return Compose YAML
+     */
     private fun composeFile(paperCount: Int, velocityCount: Int, firstVelocityPort: Int): String =
         buildString {
             appendLine("name: craftrelay-dev")
@@ -165,6 +200,10 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
             (1..velocityCount).forEach { appendLine("  velocity-$it-data:") }
         }
 
+    /** Appends one Paper service with isolated data and generated plugin configuration.
+     *
+     * @param number one-based backend number
+     */
     private fun StringBuilder.appendPaper(number: Int) {
         appendLine("  paper-$number:")
         appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay}-paper-$number")
@@ -201,6 +240,12 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
         appendLine()
     }
 
+    /** Appends one Velocity service and its references to every generated backend.
+     *
+     * @param number one-based proxy number
+     * @param port published host port
+     * @param paperCount number of backend services
+     */
     private fun StringBuilder.appendVelocity(number: Int, port: Int, paperCount: Int) {
         appendLine("  velocity-$number:")
         appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay}-velocity-$number")
@@ -243,6 +288,7 @@ abstract class GenerateEmbeddedSmokeTopologyTask : DefaultTask() {
     @get:Input
     abstract val pluginVersion: Property<String>
 
+    /** Generates the single-proxy embedded SDK smoke topology. */
     @TaskAction
     fun generate() {
         val templates = templateDirectory.get().asFile.toPath()
@@ -274,6 +320,14 @@ abstract class GenerateEmbeddedSmokeTopologyTask : DefaultTask() {
         )
     }
 
+    /** Renders Compose YAML for an embedded Paper and Velocity smoke pair.
+     *
+     * @param minecraftVersion Paper server version
+     * @param velocityVersion Velocity proxy version
+     * @param paperMemory Paper container memory limit
+     * @param velocityMemory Velocity container memory limit
+     * @return Compose YAML
+     */
     private fun composeFile(
         minecraftVersion: String,
         velocityVersion: String,
@@ -373,13 +427,26 @@ abstract class DockerComposeTask : DefaultTask() {
     @get:InputFile
     abstract val environmentFile: RegularFileProperty
 
+    /** Runs Docker Compose and logs its output.
+     *
+     * @param arguments Compose command and arguments
+     */
     protected fun compose(vararg arguments: String) {
         execute(arguments.toList(), captureOnly = false, ignoreFailure = false)
     }
 
+    /** Runs Docker Compose and returns its output without logging it.
+     *
+     * @param arguments Compose command and arguments
+     * @return combined standard output and error
+     */
     protected fun composeCaptured(vararg arguments: String): String =
         execute(arguments.toList(), captureOnly = true, ignoreFailure = false)
 
+    /** Runs best-effort cleanup commands whose non-zero result should not fail the task.
+     *
+     * @param arguments Compose command and arguments
+     */
     protected fun composeIgnoringFailure(vararg arguments: String) {
         execute(arguments.toList(), captureOnly = false, ignoreFailure = true)
     }
@@ -411,6 +478,13 @@ abstract class DockerComposeTask : DefaultTask() {
         }
     }
 
+    /** Runs a Compose command with the generated project name and environment file.
+     *
+     * @param arguments Compose command and arguments
+     * @param captureOnly whether output should be returned without logging
+     * @param ignoreFailure whether a missing executable or non-zero exit is tolerated
+     * @return combined process output
+     */
     private fun execute(arguments: List<String>, captureOnly: Boolean, ignoreFailure: Boolean): String {
         val command = listOf(
             "docker", "compose", "--project-name", composeProjectName.get(),
@@ -461,6 +535,7 @@ abstract class DockerSmokeTask : DockerComposeTask() {
     @get:Input
     abstract val presenceKeyPrefix: Property<String>
 
+    /** Starts the multi-node topology and verifies node leases, discovery, and messaging. */
     @TaskAction
     fun runSmokeTest() {
         try {
@@ -480,6 +555,7 @@ abstract class DockerSmokeTask : DockerComposeTask() {
         }
     }
 
+    /** Waits until Redis reports the expected lease count for every smoke node. */
     private fun awaitInstanceLeases() {
         val expected = paperCount.get() + velocityCount.get()
         var observed: Int? = null
@@ -498,6 +574,7 @@ abstract class DockerSmokeTask : DockerComposeTask() {
         )
     }
 
+    /** Waits until the shared Redis instance index contains every configured node ID. */
     private fun awaitInstanceIndex() {
         val expectedInstances =
             (1..paperCount.get()).map { "paper-$it" } +
@@ -527,6 +604,7 @@ abstract class EmbeddedSmokeTask : DockerComposeTask() {
     @get:Input
     abstract val presenceKeyPrefix: Property<String>
 
+    /** Starts the embedded topology and checks SDK readiness and instance leases. */
     @TaskAction
     fun runEmbeddedSmokeTest() {
         try {
@@ -551,6 +629,7 @@ abstract class EmbeddedSmokeTask : DockerComposeTask() {
         }
     }
 
+    /** Waits until both embedded hosts publish their instance leases. */
     private fun awaitInstanceLeases() {
         var observed: Int? = null
         awaitCondition(

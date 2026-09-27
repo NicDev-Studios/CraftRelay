@@ -94,6 +94,12 @@ public record RedisTransportConfig(
                 + ']';
     }
 
+    /** Validates an optional connection field without exposing its value in errors.
+     *
+     * @param value optional field
+     * @param name field name
+     * @return the validated optional field
+     */
     private static Optional<String> normalizeOptional(Optional<String> value, String name) {
         Objects.requireNonNull(value, name);
         if (value.isEmpty()) {
@@ -102,6 +108,12 @@ public record RedisTransportConfig(
         return Optional.of(requireText(value.orElseThrow(), name));
     }
 
+    /** Requires a non-blank connection setting.
+     *
+     * @param value setting value
+     * @param name setting name used in validation errors
+     * @return the unchanged setting value
+     */
     private static String requireText(String value, String name) {
         Objects.requireNonNull(value, name);
         if (value.isBlank()) {

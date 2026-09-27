@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 class PaperPluginMetadataTest {
 
+    /** Verifies the descriptor names the versioned entry point used by the plugin JAR. */
     @Test
     void pluginMetadataContainsExpandedMainClassAndVersion() throws IOException {
         try (var input = getClass().getClassLoader().getResourceAsStream("plugin.yml")) {
@@ -41,6 +42,7 @@ class PaperPluginMetadataTest {
         }
     }
 
+    /** Returns the YAML representation expected for the plugin author list. */
     private static String expectedYamlAuthors() {
         return java.util.Arrays.stream(
                         System.getProperty("craftrelayAuthors").split(","))

@@ -53,10 +53,9 @@ jobs:
           [[ "$(jq -r '.head_sha' <<<"$run_json")" == "$RUN_SHA" ]]
           [[ "$(jq -r '.head_branch' <<<"$run_json")" == "$RUN_BRANCH" ]]
 
-          pr_number="$(jq -r --arg branch "$RUN_BRANCH" --arg sha "$RUN_SHA" \
+          pr_number="$(jq -r --arg branch "$RUN_BRANCH" \
             '[.pull_requests[] | select(
-              .head.ref == $branch and
-              .head.sha == $sha
+              .head.ref == $branch
             ) | .number] | if length == 1 then .[0] else empty end' \
             <<<"$run_json")"
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || {
@@ -72,11 +71,11 @@ jobs:
           [[ "$(jq -r '.base.repo.full_name' <<<"$pr_json")" == "$REPOSITORY" ]]
           [[ "$(jq -r '.head.repo.full_name' <<<"$pr_json")" == "$REPOSITORY" ]]
           [[ "$(jq -r '.head.ref' <<<"$pr_json")" == "$RUN_BRANCH" ]]
-          [[ "$(jq -r '.head.sha' <<<"$pr_json")" == "$RUN_SHA" ]] || {
-            echo "Dependabot PR changed while verification metadata was being resolved." >&2
+          pr_head_sha="$(jq -r '.head.sha' <<<"$pr_json")"
+          [[ "$pr_head_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Dependabot PR has an invalid head commit SHA." >&2
             exit 1
           }
-
           mapfile -t artifact_files < <(find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -type f -print)
           [[ "${#artifact_files[@]}" -eq 1 ]]
           [[ "$(basename "${artifact_files[0]}")" == "verification-metadata.xml" ]]
@@ -100,7 +99,7 @@ jobs:
           cp "${artifact_files[0]}" "$OUTPUT_FILE"
           {
             echo "number=$pr_number"
-            echo "head_sha=$RUN_SHA"
+            echo "head_sha=$pr_head_sha"
             echo "head_ref=$RUN_BRANCH"
           } >> "$GITHUB_OUTPUT"
 

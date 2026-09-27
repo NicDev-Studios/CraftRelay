@@ -45,6 +45,13 @@ public final class CraftRelayConfigFiles {
         return loadOrCreate(dataDirectory, System.getenv());
     }
 
+    /** Loads or creates configuration using an explicit environment snapshot.
+     *
+     * @param dataDirectory owner-managed plugin data directory
+     * @param environment environment values to apply over YAML settings
+     * @return validated configuration
+     * @throws IOException if creating or reading the file fails
+     */
     static CraftRelayRedisConfig loadOrCreate(
             Path dataDirectory, Map<String, String> environment) throws IOException {
         Objects.requireNonNull(dataDirectory, "dataDirectory");
@@ -57,6 +64,11 @@ public final class CraftRelayConfigFiles {
         return new YamlCraftRelayConfigLoader().load(configPath, environment);
     }
 
+    /** Copies the bundled defaults unless another startup path created the file first.
+     *
+     * @param target path for the new configuration file
+     * @throws IOException if the default resource is missing or cannot be copied
+     */
     private static void copyDefault(Path target) throws IOException {
         try (InputStream input =
                 CraftRelayConfigFiles.class.getResourceAsStream(DEFAULT_RESOURCE)) {

@@ -9,16 +9,19 @@ particular built-in variable for an instance name.
 
 | Variable | Required | Behavior |
 | --- | --- | --- |
-| `CRAFTRELAY_INSTANCE_ID` | Yes for dynamic services | Overrides `instance.id`. Must be non-empty, must not be `change-me`, and must be unique among every live CraftRelay node using the same Redis database/keyspace and prefix. |
+| `CRAFTRELAY_INSTANCE_ID` | Yes for dynamic services | Overrides `instance.id`. Must be non-empty, must not be `change-me`, and must be unique among every live CraftRelay node connected to the same shared Redis service, database, and CraftRelay prefix (the same keyspace). |
 | `CRAFTRELAY_INSTANCE_GROUP` | No | Overrides `instance.group`. If unset, YAML is used; if set to an empty value, the group is cleared. |
 | `CRAFTRELAY_REDIS_USERNAME` | No | Overrides `redis.username`. If unset, YAML is used; if set to an empty value, the username is cleared. |
 | `CRAFTRELAY_REDIS_PASSWORD` | Only when Redis uses a password | Overrides `redis.password`. Supply it from the orchestrator's secret facility. Empty values are rejected. |
 
 The environment is read independently by each Paper or Velocity process. The
 orchestrator must provide a different `CRAFTRELAY_INSTANCE_ID` to each live
-service. Within the same Redis database/keyspace and prefix, lease claims reject
-an ID that is already active, including an ID duplicated across a proxy and a
-backend. After a process disappears, its lease expires using the configured TTL.
+service. Lease claims detect duplicates only among nodes connected to the same
+shared Redis service, database, and CraftRelay prefix. Nodes using a different
+service, database, or prefix do not share lease state, so their IDs are not
+compared. This includes duplicate IDs across a proxy and a backend when both
+use the same keyspace. After a process disappears, its lease expires using the
+configured instance TTL.
 
 ## Example service values
 

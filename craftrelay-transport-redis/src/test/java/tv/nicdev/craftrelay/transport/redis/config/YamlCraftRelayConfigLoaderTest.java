@@ -33,6 +33,7 @@ class YamlCraftRelayConfigLoaderTest {
     @TempDir
     Path temporaryDirectory;
 
+    /** Verifies valid YAML loads every strict section and preserves safe diagnostics. */
     @Test
     void loadsCompleteStrictConfiguration() throws IOException {
         CraftRelayRedisConfig config = load(validYaml("proxy-eu-1"));
@@ -53,6 +54,7 @@ class YamlCraftRelayConfigLoaderTest {
         assertFalse(config.redis().toString().contains("secret"));
     }
 
+    /** Rejects unknown keys, placeholder identities, and absent identity values. */
     @Test
     void rejectsUnknownKeysAndPlaceholderIdentity() {
         assertThrows(
@@ -70,6 +72,7 @@ class YamlCraftRelayConfigLoaderTest {
                 () -> load(validYaml("proxy-1").replace("  id: \"proxy-1\"\n", "")));
     }
 
+    /** Verifies per-process identity and Redis credential overrides take precedence. */
     @Test
     void environmentOverridesPerNodeIdentityGroupAndRedisPassword() throws IOException {
         String password = "runtime-secret-value";
@@ -92,6 +95,7 @@ class YamlCraftRelayConfigLoaderTest {
         assertFalse(config.toString().contains(password));
     }
 
+    /** Allows an environment ID when YAML omits it and keeps the group optional. */
     @Test
     void environmentIdentityCanReplaceAnOmittedYamlIdAndGroupIsOptional() throws IOException {
         String yaml = validYaml("yaml-id")
@@ -106,6 +110,7 @@ class YamlCraftRelayConfigLoaderTest {
         assertTrue(config.group().isEmpty());
     }
 
+    /** Treats an explicitly blank group override as a request to clear the group. */
     @Test
     void emptyGroupEnvironmentValueClearsYamlGroup() throws IOException {
         CraftRelayRedisConfig config = load(
@@ -114,6 +119,7 @@ class YamlCraftRelayConfigLoaderTest {
         assertTrue(config.group().isEmpty());
     }
 
+    /** Rejects blank or placeholder IDs without echoing unrelated secret values. */
     @Test
     void rejectsEmptyOrPlaceholderEnvironmentIdentityWithoutExposingSecrets() throws IOException {
         String secret = "do-not-print-this-password";
@@ -132,6 +138,7 @@ class YamlCraftRelayConfigLoaderTest {
         assertTrue(placeholder.getMessage().contains("change-me"));
     }
 
+    /** Rejects an empty Redis password override without including it in diagnostics. */
     @Test
     void rejectsAnEmptyRedisPasswordEnvironmentValueWithoutEchoingIt() throws IOException {
         IllegalArgumentException failure = assertThrows(
@@ -143,6 +150,7 @@ class YamlCraftRelayConfigLoaderTest {
         assertFalse(failure.getMessage().contains("secret"));
     }
 
+    /** Rejects absent and unsupported schema versions. */
     @Test
     void requiresSupportedSchemaVersion() {
         assertThrows(
@@ -153,6 +161,7 @@ class YamlCraftRelayConfigLoaderTest {
                 () -> load(validYaml("proxy-1").replace("config-version: 1\n", "")));
     }
 
+    /** Rejects unsafe YAML tags and alias expansion beyond the configured limit. */
     @Test
     void rejectsUnsafeTagsAndExcessiveAliases() {
         assertThrows(
@@ -166,6 +175,7 @@ class YamlCraftRelayConfigLoaderTest {
         assertThrows(IllegalArgumentException.class, () -> load(aliases.toString()));
     }
 
+    /** Writes the bundled placeholder config but refuses to treat it as runnable. */
     @Test
     void createsDocumentedDefaultWithoutSilentlyStarting() throws IOException {
         assertThrows(
@@ -177,10 +187,18 @@ class YamlCraftRelayConfigLoaderTest {
         assertTrue(Files.readString(config).contains("id: \"change-me\""));
     }
 
+    /** Loads test YAML with no environment overrides. */
     private CraftRelayRedisConfig load(String yaml) throws IOException {
         return load(yaml, Map.of());
     }
 
+    /** Writes test YAML and loads it with a deterministic environment snapshot.
+     *
+     * @param yaml YAML document to validate
+     * @param environment environment overrides for this test
+     * @return parsed configuration
+     * @throws IOException if the temporary file cannot be written or read
+     */
     private CraftRelayRedisConfig load(String yaml, Map<String, String> environment)
             throws IOException {
         Path file = temporaryDirectory.resolve("config.yml");
@@ -188,6 +206,11 @@ class YamlCraftRelayConfigLoaderTest {
         return new YamlCraftRelayConfigLoader().load(file, environment);
     }
 
+    /** Creates a complete valid document with the requested instance ID.
+     *
+     * @param instanceId identity to place in the fixture
+     * @return complete schema-version-1 YAML
+     */
     private static String validYaml(String instanceId) {
         return """
                 config-version: 1

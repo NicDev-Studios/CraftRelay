@@ -106,15 +106,14 @@ public final class PaperPluginLifecycle {
             shutdown.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException failure) {
             Thread.currentThread().interrupt();
-            plugin.getLogger().log(Level.WARNING, "CraftRelay shutdown was interrupted", failure);
+            plugin.getLogger().warning("CraftRelay shutdown was interrupted");
         } catch (ExecutionException failure) {
             plugin.getLogger().warning(
                     "CraftRelay shutdown failed ("
                             + AsyncFailures.unwrap(failure).getClass().getName()
                             + ')');
         } catch (TimeoutException failure) {
-            plugin.getLogger().log(
-                    Level.WARNING, "CraftRelay shutdown exceeded " + timeout, failure);
+            plugin.getLogger().warning("CraftRelay shutdown exceeded " + timeout);
         }
     }
 
@@ -139,8 +138,9 @@ public final class PaperPluginLifecycle {
             }
             plugin.getLogger().log(
                     Level.SEVERE,
-                    "Could not finish CraftRelay startup on the server thread",
-                    schedulingFailure);
+                    "Could not finish CraftRelay startup on the server thread ("
+                            + schedulingFailure.getClass().getName()
+                            + ')');
         }
     }
 

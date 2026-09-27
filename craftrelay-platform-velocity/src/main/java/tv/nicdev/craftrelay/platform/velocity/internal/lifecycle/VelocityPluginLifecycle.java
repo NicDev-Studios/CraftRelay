@@ -171,8 +171,8 @@ public final class VelocityPluginLifecycle {
                         .whenComplete((ignored, failure) -> {
                             if (failure != null) {
                                 logger.warn(
-                                        "A CraftRelayReadyEvent listener failed",
-                                        AsyncFailures.unwrap(failure));
+                                        "A CraftRelayReadyEvent listener failed ({})",
+                                        AsyncFailures.unwrap(failure).getClass().getName());
                             }
                             completion.complete(null);
                         });
@@ -215,7 +215,9 @@ public final class VelocityPluginLifecycle {
             if (completion != null) {
                 completion.completeExceptionally(failure);
             } else {
-                logger.warn("Could not schedule Velocity lifecycle cleanup", failure);
+                logger.warn(
+                        "Could not schedule Velocity lifecycle cleanup ({})",
+                        failure.getClass().getName());
             }
         }
     }

@@ -34,7 +34,7 @@ class PaperPluginMetadataTest {
                     "main: tv.nicdev.craftrelay.platform.paper.CraftRelayPaperPlugin"));
             assertTrue(metadata.contains(
                     "version: \"" + System.getProperty("craftrelayVersion") + '"'));
-            assertTrue(metadata.contains("api-version: \"1.20.6\""));
+            assertTrue(metadata.contains("api-version: \"26.2\""));
             assertTrue(metadata.contains("authors: " + expectedYamlAuthors()));
             assertFalse(metadata.contains("${version}"));
             assertFalse(metadata.contains("${authors}"));

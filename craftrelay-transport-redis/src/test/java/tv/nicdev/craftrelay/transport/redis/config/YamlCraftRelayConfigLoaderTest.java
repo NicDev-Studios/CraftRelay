@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -61,6 +62,85 @@ class YamlCraftRelayConfigLoaderTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> load(validYaml("change-me")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> load(validYaml("")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> load(validYaml("proxy-1").replace("  id: \"proxy-1\"\n", "")));
+    }
+
+    @Test
+    void environmentOverridesPerNodeIdentityGroupAndRedisPassword() throws IOException {
+        String password = "runtime-secret-value";
+        String username = "runtime-acl-user";
+        CraftRelayRedisConfig config = load(
+                validYaml("yaml-id"),
+                Map.of(
+                        "CRAFTRELAY_INSTANCE_ID", "paper-lobby-7",
+                        "CRAFTRELAY_INSTANCE_GROUP", "lobby",
+                        "CRAFTRELAY_REDIS_USERNAME", username,
+                        "CRAFTRELAY_REDIS_PASSWORD", password));
+
+        assertEquals("paper-lobby-7", config.instanceId());
+        assertEquals("lobby", config.group().orElseThrow());
+        assertEquals(username, config.redis().username().orElseThrow());
+        assertEquals(password, config.redis().password().orElseThrow());
+        assertFalse(config.redis().toString().contains(username));
+        assertFalse(config.redis().toString().contains(password));
+        assertFalse(config.toString().contains(username));
+        assertFalse(config.toString().contains(password));
+    }
+
+    @Test
+    void environmentIdentityCanReplaceAnOmittedYamlIdAndGroupIsOptional() throws IOException {
+        String yaml = validYaml("yaml-id")
+                .replace(
+                        "instance:\n  id: \"yaml-id\"\n  group: \"eu\"",
+                        "instance: {}");
+
+        CraftRelayRedisConfig config = load(
+                yaml, Map.of("CRAFTRELAY_INSTANCE_ID", "proxy-eu-3"));
+
+        assertEquals("proxy-eu-3", config.instanceId());
+        assertTrue(config.group().isEmpty());
+    }
+
+    @Test
+    void emptyGroupEnvironmentValueClearsYamlGroup() throws IOException {
+        CraftRelayRedisConfig config = load(
+                validYaml("proxy-1"), Map.of("CRAFTRELAY_INSTANCE_GROUP", ""));
+
+        assertTrue(config.group().isEmpty());
+    }
+
+    @Test
+    void rejectsEmptyOrPlaceholderEnvironmentIdentityWithoutExposingSecrets() throws IOException {
+        String secret = "do-not-print-this-password";
+        IllegalArgumentException empty = assertThrows(
+                IllegalArgumentException.class,
+                () -> load(validYaml("yaml-id"), Map.of(
+                        "CRAFTRELAY_INSTANCE_ID", "",
+                        "CRAFTRELAY_REDIS_PASSWORD", secret)));
+        assertTrue(empty.getMessage().contains("CRAFTRELAY_INSTANCE_ID"));
+        assertFalse(empty.getMessage().contains(secret));
+
+        IllegalArgumentException placeholder = assertThrows(
+                IllegalArgumentException.class,
+                () -> load(validYaml("yaml-id"), Map.of(
+                        "CRAFTRELAY_INSTANCE_ID", "change-me")));
+        assertTrue(placeholder.getMessage().contains("change-me"));
+    }
+
+    @Test
+    void rejectsAnEmptyRedisPasswordEnvironmentValueWithoutEchoingIt() throws IOException {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> load(validYaml("proxy-1"), Map.of(
+                        "CRAFTRELAY_REDIS_PASSWORD", "")));
+
+        assertTrue(failure.getMessage().contains("CRAFTRELAY_REDIS_PASSWORD"));
+        assertFalse(failure.getMessage().contains("secret"));
     }
 
     @Test
@@ -97,9 +177,14 @@ class YamlCraftRelayConfigLoaderTest {
     }
 
     private CraftRelayRedisConfig load(String yaml) throws IOException {
+        return load(yaml, Map.of());
+    }
+
+    private CraftRelayRedisConfig load(String yaml, Map<String, String> environment)
+            throws IOException {
         Path file = temporaryDirectory.resolve("config.yml");
         Files.writeString(file, yaml);
-        return new YamlCraftRelayConfigLoader().load(file);
+        return new YamlCraftRelayConfigLoader().load(file, environment);
     }
 
     private static String validYaml(String instanceId) {

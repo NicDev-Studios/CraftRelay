@@ -78,7 +78,7 @@ public record RedisTransportConfig(
     }
 
     /**
-     * Returns a diagnostic representation without exposing the configured password.
+     * Returns a diagnostic representation without exposing configured credentials.
      *
      * @return redacted configuration text
      */
@@ -86,7 +86,7 @@ public record RedisTransportConfig(
     public String toString() {
         return "RedisTransportConfig[host=" + host
                 + ", port=" + port
-                + ", username=" + username
+                + ", username=" + (username.isPresent() ? "Optional[REDACTED]" : "Optional.empty")
                 + ", password=" + (password.isPresent() ? "Optional[REDACTED]" : "Optional.empty")
                 + ", database=" + database
                 + ", ssl=" + ssl

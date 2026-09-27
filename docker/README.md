@@ -42,7 +42,8 @@ Copy-Item docker/.env.example docker/.env
 `docker/.env` is ignored by Git. The most important setting is:
 
 ```dotenv
-MINECRAFT_VERSION=1.20.6
+MINECRAFT_VERSION=26.2
+VELOCITY_VERSION=4.2.1-SNAPSHOT
 PAPER_COUNT=2
 VELOCITY_COUNT=2
 PAPER_OPS=YourMinecraftName
@@ -56,10 +57,12 @@ so on; Docker Compose does not append a project or replica suffix. `devSmoke`
 uses the separate `craftrelay-smoke` prefix, so it cannot collide with a
 running development topology.
 
-Every Paper server uses the selected version. Values supported by the
-`itzg/minecraft-server` Paper image can be selected; CraftRelay itself targets
-Paper API 1.20.6, so older server versions are not supported. The same file can
-change Velocity's version, memory limits, and the first published proxy port.
+The checked-in defaults are Paper 26.2 and Velocity 4.2.1-SNAPSHOT, with two
+backends and two proxies. Paper plugin metadata requires API 26.2, so older
+Paper versions will refuse to load it. These platform versions require Java
+25; the smoke containers use the Java 25 image variants. Keep the smoke
+versions aligned with `gradle/libs.versions.toml` when updating platform APIs.
+The same file can change memory limits and the first published proxy port.
 
 `PAPER_OPS` is synchronized to both Paper servers whenever they start. The
 same usernames receive access to the Example plugin's
@@ -76,8 +79,9 @@ recreates the affected containers. This environment-based Velocity fallback
 exists only for the local Docker topology; regular installations should grant
 `craftrelay.example.admin` through their Velocity permission provider.
 
-Velocity can switch between `paper-1` and `paper-2`. The second proxy is useful
-for testing distributed proxy presence and duplicate-session fencing.
+Velocity can switch between `paper-1` and `paper-2`. The default two proxies
+and multiple backends exercise distributed proxy presence and duplicate-session
+fencing.
 
 ## Automated smoke test
 

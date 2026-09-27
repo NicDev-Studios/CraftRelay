@@ -100,9 +100,9 @@ public final class PlayerConnectRequestListener {
                 .whenComplete((result, failure) -> {
                     if (failure != null) {
                         logger.warn(
-                                "Player connection request failed for {}",
+                                "Player connection request failed for {} ({})",
                                 request.playerId(),
-                                AsyncFailures.unwrap(failure));
+                                AsyncFailures.unwrap(failure).getClass().getName());
                     } else if (!result.isSuccessful()) {
                         logger.warn(
                                 "Velocity rejected player connection request for {}: {}",

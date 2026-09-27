@@ -33,12 +33,16 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.net.InetSocketAddress;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import tv.nicdev.craftrelay.api.exception.ApiUnavailableException;
 import tv.nicdev.craftrelay.api.message.PlayerConnectRequest;
 import tv.nicdev.craftrelay.api.model.NetworkPlayer;
 import tv.nicdev.craftrelay.common.internal.presence.PlayerPresence;
@@ -63,7 +67,7 @@ class VelocityPlayerAdaptersTest {
                 "down",
                 "duplicate");
 
-        await(listener.onLogin(new LoginEvent(player)));
+        await(listener.onLogin(new LoginEvent(player, null)));
         UUID sessionId = presence.connectedSession;
         assertNotNull(sessionId);
 
@@ -78,7 +82,7 @@ class VelocityPlayerAdaptersTest {
     void duplicateSessionDeniesLoginAfterReturningToScheduler() throws Exception {
         RecordingPresence presence = new RecordingPresence();
         presence.connectFailure = new PlayerSessionConflictException("active duplicate");
-        LoginEvent event = new LoginEvent(player(UUID.randomUUID(), "Player", null));
+        LoginEvent event = new LoginEvent(player(UUID.randomUUID(), "Player", null), null);
         VelocityPlayerPresenceListener listener = new VelocityPlayerPresenceListener(
                 new Object(),
                 proxyServer(null, null),
@@ -90,6 +94,41 @@ class VelocityPlayerAdaptersTest {
         await(listener.onLogin(event));
 
         assertFalse(event.getResult().isAllowed());
+    }
+
+    @Test
+    void redisFailureDeniesLoginWithoutLoggingFailureMessage() throws Exception {
+        String syntheticSecret = "synthetic-secret-for-test";
+        RecordingPresence presence = new RecordingPresence();
+        presence.connectFailure = new ApiUnavailableException(syntheticSecret);
+        AtomicReference<String> warning = new AtomicReference<>();
+        Logger logger = dynamicProxy(Logger.class, (proxy, method, arguments) -> {
+            if (method.getName().equals("warn")) {
+                warning.set(Arrays.deepToString(arguments));
+            }
+            if (method.getReturnType() == String.class) {
+                return "test";
+            }
+            if (method.getReturnType() == boolean.class) {
+                return true;
+            }
+            return null;
+        });
+        LoginEvent event = new LoginEvent(player(UUID.randomUUID(), "Player", null), null);
+        VelocityPlayerPresenceListener listener = new VelocityPlayerPresenceListener(
+                new Object(),
+                proxyServer(null, null),
+                presence,
+                new LocalPlayerSessions(),
+                "down",
+                "duplicate",
+                logger);
+
+        await(listener.onLogin(event));
+
+        assertFalse(event.getResult().isAllowed());
+        assertNotNull(warning.get());
+        assertFalse(warning.get().contains(syntheticSecret));
     }
 
     @Test

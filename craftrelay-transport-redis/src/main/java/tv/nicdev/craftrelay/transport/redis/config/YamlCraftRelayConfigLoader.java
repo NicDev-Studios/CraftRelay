@@ -44,6 +44,11 @@ import tv.nicdev.craftrelay.transport.redis.RedisTransportConfig;
  */
 public final class YamlCraftRelayConfigLoader {
 
+    static final String INSTANCE_ID_ENV = "CRAFTRELAY_INSTANCE_ID";
+    static final String INSTANCE_GROUP_ENV = "CRAFTRELAY_INSTANCE_GROUP";
+    static final String REDIS_USERNAME_ENV = "CRAFTRELAY_REDIS_USERNAME";
+    static final String REDIS_PASSWORD_ENV = "CRAFTRELAY_REDIS_PASSWORD";
+
     private static final Pattern SHORT_DURATION =
             Pattern.compile("([1-9][0-9]*)(ms|s|m|h)");
     private static final int CODE_POINT_LIMIT = 1_000_000;
@@ -65,7 +70,12 @@ public final class YamlCraftRelayConfigLoader {
      * @throws IllegalArgumentException if the document is structurally invalid
      */
     public CraftRelayRedisConfig load(Path path) throws IOException {
+        return load(path, System.getenv());
+    }
+
+    CraftRelayRedisConfig load(Path path, Map<String, String> environment) throws IOException {
         Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(environment, "environment");
         Object document;
         try (InputStream input = Files.newInputStream(path)) {
             document = yaml.loadFromInputStream(input);
@@ -84,7 +94,18 @@ public final class YamlCraftRelayConfigLoader {
                 "presence", "platform"));
 
         Map<String, Object> instance = section(root, "instance");
-        requireKeys(instance, "instance", Set.of("id", "group"));
+        requireKnownKeys(instance, "instance", Set.of("id", "group"));
+        String instanceId = environment.containsKey(INSTANCE_ID_ENV)
+                ? environmentText(environment, INSTANCE_ID_ENV)
+                : instanceIdFromYaml(instance);
+        Optional<String> group = environment.containsKey(INSTANCE_GROUP_ENV)
+                ? environmentOptionalText(environment, INSTANCE_GROUP_ENV)
+                : instance.containsKey("group")
+                        ? optionalText(instance, "group")
+                        : Optional.empty();
+        validateInstanceId(instanceId, environment.containsKey(INSTANCE_ID_ENV)
+                ? INSTANCE_ID_ENV
+                : "instance.id");
 
         Map<String, Object> redis = section(root, "redis");
         requireKeys(redis, "redis", Set.of(
@@ -118,14 +139,20 @@ public final class YamlCraftRelayConfigLoader {
                 "duplicate-session-message"));
 
         String prefix = text(messaging, "prefix");
+        Optional<String> redisUsername = environment.containsKey(REDIS_USERNAME_ENV)
+                ? environmentOptionalText(environment, REDIS_USERNAME_ENV)
+                : optionalText(redis, "username");
+        Optional<String> redisPassword = environment.containsKey(REDIS_PASSWORD_ENV)
+                ? Optional.of(environmentText(environment, REDIS_PASSWORD_ENV))
+                : optionalText(redis, "password");
         CraftRelayRedisConfig result = new CraftRelayRedisConfig(
-                text(instance, "id"),
-                optionalText(instance, "group"),
+                instanceId,
+                group,
                 new RedisTransportConfig(
                         text(redis, "host"),
                         integer(redis, "port"),
-                        optionalText(redis, "username"),
-                        optionalText(redis, "password"),
+                        redisUsername,
+                        redisPassword,
                         integer(redis, "database"),
                         bool(redis, "tls"),
                         duration(redis, "connection-timeout")),
@@ -154,6 +181,35 @@ public final class YamlCraftRelayConfigLoader {
         return result;
     }
 
+    private static String environmentText(Map<String, String> environment, String key) {
+        String value = environment.get(key);
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(key + " must be set to a non-empty value");
+        }
+        return value;
+    }
+
+    private static Optional<String> environmentOptionalText(
+            Map<String, String> environment, String key) {
+        String value = environment.get(key);
+        if (value == null) {
+            throw new IllegalArgumentException(key + " must not be null");
+        }
+        return value.isBlank() ? Optional.empty() : Optional.of(value);
+    }
+
+    private static void validateInstanceId(String value, String source) {
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(source + " must not be empty");
+        }
+        if (!value.equals(value.strip())) {
+            throw new IllegalArgumentException(source + " must not have surrounding whitespace");
+        }
+        if ("change-me".equalsIgnoreCase(value)) {
+            throw new IllegalArgumentException(source + " must be changed from 'change-me'");
+        }
+    }
+
     private static Map<String, Object> section(Map<String, Object> parent, String key) {
         return mapping(required(parent, key), key);
     }
@@ -174,16 +230,28 @@ public final class YamlCraftRelayConfigLoader {
 
     private static void requireKeys(
             Map<String, Object> values, String path, Set<String> allowed) {
-        for (String key : values.keySet()) {
-            if (!allowed.contains(key)) {
-                throw new IllegalArgumentException("Unknown configuration key: " + path + '.' + key);
-            }
-        }
+        requireKnownKeys(values, path, allowed);
         for (String key : allowed) {
             if (!values.containsKey(key)) {
                 throw new IllegalArgumentException("Missing configuration key: " + path + '.' + key);
             }
         }
+    }
+
+    private static void requireKnownKeys(
+            Map<String, Object> values, String path, Set<String> allowed) {
+        for (String key : values.keySet()) {
+            if (!allowed.contains(key)) {
+                throw new IllegalArgumentException("Unknown configuration key: " + path + '.' + key);
+            }
+        }
+    }
+
+    private static String instanceIdFromYaml(Map<String, Object> instance) {
+        if (!instance.containsKey("id")) {
+            throw new IllegalArgumentException("Missing configuration key: instance.id");
+        }
+        return text(instance, "id");
     }
 
     private static Object required(Map<String, Object> values, String key) {

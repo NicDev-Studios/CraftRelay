@@ -168,11 +168,11 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
     private fun StringBuilder.appendPaper(number: Int) {
         appendLine("  paper-$number:")
         appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay}-paper-$number")
-        appendLine("    image: itzg/minecraft-server:java21")
+        appendLine("    image: itzg/minecraft-server:java25")
         appendLine("    environment:")
         appendLine("      EULA: \"TRUE\"")
         appendLine("      TYPE: \"PAPER\"")
-        appendLine("      VERSION: \"${'$'}{MINECRAFT_VERSION:-1.20.6}\"")
+        appendLine("      VERSION: \"${'$'}{MINECRAFT_VERSION:-26.2}\"")
         appendLine("      ONLINE_MODE: \"FALSE\"")
         appendLine("      COPY_CONFIG_DEST: \"/data\"")
         appendLine("      MEMORY: \"${'$'}{PAPER_MEMORY:-1G}\"")
@@ -204,10 +204,10 @@ abstract class GenerateDockerTopologyTask : DefaultTask() {
     private fun StringBuilder.appendVelocity(number: Int, port: Int, paperCount: Int) {
         appendLine("  velocity-$number:")
         appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay}-velocity-$number")
-        appendLine("    image: itzg/mc-proxy:java21")
+        appendLine("    image: itzg/mc-proxy:java25")
         appendLine("    environment:")
         appendLine("      TYPE: \"VELOCITY\"")
-        appendLine("      VELOCITY_VERSION: \"${'$'}{VELOCITY_VERSION:-3.4.0-SNAPSHOT}\"")
+        appendLine("      VELOCITY_VERSION: \"${'$'}{VELOCITY_VERSION:-4.2.1-SNAPSHOT}\"")
         appendLine("      MEMORY: \"${'$'}{VELOCITY_MEMORY:-512M}\"")
         appendLine("      CRAFTRELAY_DEV_ADMINS: \"${'$'}{PAPER_OPS:-}\"")
         appendLine("    ports:")
@@ -248,8 +248,8 @@ abstract class GenerateEmbeddedSmokeTopologyTask : DefaultTask() {
         val templates = templateDirectory.get().asFile.toPath()
         val output = outputDirectory.get().asFile.toPath()
         val environment = readEnvironment(environmentFile.get().asFile.toPath())
-        val minecraftVersion = environment["MINECRAFT_VERSION"] ?: "1.20.6"
-        val velocityVersion = environment["VELOCITY_VERSION"] ?: "3.4.0-SNAPSHOT"
+        val minecraftVersion = environment["MINECRAFT_VERSION"] ?: "26.2"
+        val velocityVersion = environment["VELOCITY_VERSION"] ?: "4.2.1-SNAPSHOT"
         val paperMemory = environment["PAPER_MEMORY"] ?: "1G"
         val velocityMemory = environment["VELOCITY_MEMORY"] ?: "512M"
 
@@ -296,7 +296,7 @@ abstract class GenerateEmbeddedSmokeTopologyTask : DefaultTask() {
         appendLine()
         appendLine("  paper:")
         appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay-embedded-smoke}-paper")
-        appendLine("    image: itzg/minecraft-server:java21")
+        appendLine("    image: itzg/minecraft-server:java25")
         appendLine("    environment:")
         appendLine("      EULA: \"TRUE\"")
         appendLine("      TYPE: \"PAPER\"")
@@ -324,7 +324,7 @@ abstract class GenerateEmbeddedSmokeTopologyTask : DefaultTask() {
         appendLine()
         appendLine("  velocity:")
         appendLine("    container_name: ${'$'}{CRAFTRELAY_CONTAINER_PREFIX:-craftrelay-embedded-smoke}-velocity")
-        appendLine("    image: itzg/mc-proxy:java21")
+        appendLine("    image: itzg/mc-proxy:java25")
         appendLine("    environment:")
         appendLine("      TYPE: \"VELOCITY\"")
         appendLine("      VELOCITY_VERSION: \"$velocityVersion\"")

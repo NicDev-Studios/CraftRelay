@@ -225,11 +225,12 @@ public final class VelocityPlayerPresenceListener {
     private void logMutationFailure(
             String operation, UUID playerId, Throwable failure) {
         if (failure != null) {
+            Throwable cause = AsyncFailures.unwrap(failure);
             logger.warn(
-                    "Player presence {} failed for {}",
+                    "Player presence {} failed for {} ({})",
                     operation,
                     playerId,
-                    AsyncFailures.unwrap(failure));
+                    cause.getClass().getName());
         }
     }
 
@@ -240,9 +241,9 @@ public final class VelocityPlayerPresenceListener {
                 : unavailableMessage;
         event.setResult(ComponentResult.denied(Component.text(message)));
         logger.warn(
-                "Player presence claim failed for {}",
+                "Player presence claim failed for {} ({})",
                 player.getUniqueId(),
-                cause);
+                cause.getClass().getName());
     }
 
     private static String requireText(String value, String name) {

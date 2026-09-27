@@ -3595,13 +3595,13 @@
       </component>
       <component group="com.velocitypowered" name="velocity-api" version="4.2.1-SNAPSHOT">
          <artifact name="velocity-api-4.2.1-SNAPSHOT.jar">
-            <sha256 value="3f3e6ade0f39b5ef859aa6f8c5deb30bbf99dd33fe2c112b9278437a96a109d9" origin="Verified from PaperMC snapshot 20260927.093814-3"/>
+            <sha256 value="c0c662e9a563a4530894a81c7c2cf0b8f149d24ad6263725bb6c92c20d8e8dd3" origin="Verified from PaperMC snapshot 20260927.175310-4"/>
          </artifact>
          <artifact name="velocity-api-4.2.1-SNAPSHOT.module">
-            <sha256 value="8e893f17b0530bb2cf5d3247053c51850de03a7e57338199a3911cc590a787f8" origin="Verified from PaperMC snapshot 20260927.093814-3"/>
+            <sha256 value="cab9ce318be883832e07093c570180c0320768016fd19fb2b23d3147776b5be7" origin="Verified from PaperMC snapshot 20260927.175310-4"/>
          </artifact>
          <artifact name="velocity-api-4.2.1-SNAPSHOT.pom">
-            <sha256 value="717c404d4cccfd75c47163220a153fea6dd780a9a0100e9851256034e83ce7d4" origin="Verified from PaperMC snapshot 20260927.093814-3"/>
+            <sha256 value="717c404d4cccfd75c47163220a153fea6dd780a9a0100e9851256034e83ce7d4" origin="Verified from PaperMC snapshot 20260927.175310-4"/>
          </artifact>
       </component>
       <component group="commons-codec" name="commons-codec" version="1.16.0">

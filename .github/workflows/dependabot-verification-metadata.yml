@@ -46,6 +46,9 @@ jobs:
             case "$file" in
               gradle/libs.versions.toml|gradle/wrapper/gradle-wrapper.jar|gradle/wrapper/gradle-wrapper.properties)
                 ;;
+              gradle/verification-metadata.xml)
+                # The privileged apply workflow reconciles this data with trusted main metadata.
+                ;;
               *)
                 echo "Unexpected file in Dependabot Gradle PR: $file" >&2
                 exit 1

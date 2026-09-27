@@ -164,19 +164,71 @@ jobs:
           }
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Create verified metadata commit
+      - name: Create verified metadata commit against expected head
         id: commit
         if: steps.merge.outputs.changed == 'true'
-        uses: iarekylew00t/verified-bot-commit@42a042b0407248f3c0acac00c389e729e3476e86 # v2.3.5
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          ref: ${{ steps.context.outputs.head_ref }}
-          workspace: ${{ github.workspace }}
-          update-local: false
-          message: "chore(deps): update Gradle verification metadata"
-          files: gradle/verification-metadata.xml
-          if-no-commit: info
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ steps.context.outputs.head_ref }}
+          EXPECTED_SHA: ${{ steps.context.outputs.head_sha }}
+          METADATA_FILE: ${{ github.workspace }}/gradle/verification-metadata.xml
+          COMMIT_REQUEST: ${{ runner.temp }}/metadata-commit-request.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BRANCH" == dependabot/gradle/* ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ -f "$METADATA_FILE" && ! -L "$METADATA_FILE" ]]
+          # expectedHeadOid makes the branch update conditional on this exact revision.
+          python3 - "$REPOSITORY" "$BRANCH" "$EXPECTED_SHA" \
+            "$METADATA_FILE" "$COMMIT_REQUEST" <<'PY'
+          import base64
+          import json
+          from pathlib import Path
+          import sys
+
+          repository, branch, expected_head, metadata_file, request_file = sys.argv[1:]
+          request = {
+              "query": (
+                  "mutation($input: CreateCommitOnBranchInput!) { "
+                  "createCommitOnBranch(input: $input) { commit { oid } "
+                  "ref { target { oid } } } }"
+              ),
+              "variables": {
+                  "input": {
+                      "branch": {
+                          "repositoryNameWithOwner": repository,
+                          "branchName": branch,
+                      },
+                      "expectedHeadOid": expected_head,
+                      "message": {
+                          "headline": "chore(deps): update Gradle verification metadata",
+                      },
+                      "fileChanges": {
+                          "additions": [{
+                              "path": "gradle/verification-metadata.xml",
+                              "contents": base64.b64encode(
+                                  Path(metadata_file).read_bytes()
+                              ).decode("ascii"),
+                          }],
+                      },
+                  },
+              },
+          }
+          Path(request_file).write_text(json.dumps(request), encoding="utf-8")
+          PY
+          result="$(gh api graphql --input "$COMMIT_REQUEST")"
+          if jq -e '.errors | length > 0' <<<"$result" >/dev/null; then
+            jq -r '.errors[].message' <<<"$result" >&2
+            exit 1
+          fi
+          commit_sha="$(jq -r '.data.createCommitOnBranch.commit.oid // empty' \
+            <<<"$result")"
+          [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(jq -r '.data.createCommitOnBranch.ref.target.oid // empty' \
+            <<<"$result")" == "$commit_sha" ]]
+          echo "ref=$commit_sha" >> "$GITHUB_OUTPUT"
 
       - name: Re-run build for verified metadata commit
         if: steps.merge.outputs.changed == 'true' && steps.commit.outputs.ref != ''

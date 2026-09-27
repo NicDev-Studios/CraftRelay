@@ -81,7 +81,7 @@ jobs:
           [[ "${#artifact_files[@]}" -eq 1 ]]
           [[ "$(basename "${artifact_files[0]}")" == "verification-metadata.xml" ]]
           [[ ! -L "${artifact_files[0]}" ]]
-          python3 - "$artifact_files[0]" <<'PY'
+          python3 - "${artifact_files[0]}" <<'PY'
           from pathlib import Path
           import sys
           import xml.etree.ElementTree as ET

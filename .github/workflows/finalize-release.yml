@@ -20,12 +20,13 @@ concurrency:
 
 jobs:
   finalize:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: write
       attestations: read
-    environment: maven-central
+    environment: maven-central # Requires maintainer approval and is limited to main in repository settings.
     steps:
       - name: Validate explicit confirmation
         env:
@@ -60,8 +61,22 @@ jobs:
           version="${TAG#v}"
           draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
           target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
+          tag_commit="$(git rev-parse "refs/tags/$TAG^{commit}")"
           [[ "$draft" == "true" ]] || { echo "Release $TAG is not a draft." >&2; exit 1; }
-          [[ "$target" == "$(git rev-parse HEAD)" ]] || { echo "Draft and checked-out tag target different commits." >&2; exit 1; }
+          [[ "$tag_commit" == "$(git rev-parse HEAD)" ]] || {
+            echo "The checked-out commit does not match the requested release tag." >&2
+            exit 1
+          }
+          [[ "$target" == "$tag_commit" ]] || { echo "Draft and tag target different commits." >&2; exit 1; }
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$tag_commit" origin/main || {
+            echo "The release tag is not contained in main." >&2
+            exit 1
+          }
+          grep -Eq "^## \\[$version\\]( - .+)?$" CHANGELOG.md || {
+            echo "CHANGELOG.md has no section for $version." >&2
+            exit 1
+          }
           mkdir artifacts
           gh release download "$TAG" --dir artifacts
           printf '%s\n' \
@@ -78,7 +93,10 @@ jobs:
           diff -u expected-assets.txt actual-assets.txt
           (cd artifacts && sha256sum --check SHA256SUMS && sha512sum --check SHA512SUMS)
           for asset in artifacts/*; do
-            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
+            gh attestation verify "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$TAG"
           done
 
       - name: Validate Gradle wrapper

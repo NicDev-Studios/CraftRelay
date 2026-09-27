@@ -1,0 +1,173 @@
+name: Apply Dependabot verification metadata
+
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] -- validates the exact same-repo Dependabot run; treats its XML artifact as data and never executes PR code
+    workflows: [Resolve Dependabot verification metadata]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-verification-apply-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Download metadata from the exact resolver run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dependency-verification-seed
+          path: ${{ runner.temp }}/dependency-verification-seed
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate the resolver run and open Dependabot PR
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          ARTIFACT_DIRECTORY: ${{ runner.temp }}/dependency-verification-seed
+          OUTPUT_FILE: ${{ runner.temp }}/verification-metadata.xml
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_json="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID")"
+          [[ "$(jq -r '.event' <<<"$run_json")" == "pull_request" ]]
+          [[ "$(jq -r '.actor.login' <<<"$run_json")" == "dependabot[bot]" ]]
+          [[ "$(jq -r '.head_repository.full_name' <<<"$run_json")" == "$REPOSITORY" ]]
+          [[ "$(jq -r '.head_sha' <<<"$run_json")" == "$RUN_SHA" ]]
+          [[ "$(jq -r '.head_branch' <<<"$run_json")" == "$RUN_BRANCH" ]]
+
+          pr_number="$(jq -r --arg branch "$RUN_BRANCH" --arg sha "$RUN_SHA" \
+            '[.pull_requests[] | select(
+              .head.ref == $branch and
+              .head.sha == $sha
+            ) | .number] | if length == 1 then .[0] else empty end' \
+            <<<"$run_json")"
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Resolver run is not linked to exactly one matching pull request." >&2
+            exit 1
+          }
+
+          pr_json="$(gh api "repos/$REPOSITORY/pulls/$pr_number")"
+          [[ "$(jq -r '.state' <<<"$pr_json")" == "open" ]]
+          [[ "$(jq -r '.user.login' <<<"$pr_json")" == "dependabot[bot]" ]]
+          [[ "$RUN_BRANCH" == dependabot/gradle/* ]]
+          [[ "$(jq -r '.base.ref' <<<"$pr_json")" == "main" ]]
+          [[ "$(jq -r '.base.repo.full_name' <<<"$pr_json")" == "$REPOSITORY" ]]
+          [[ "$(jq -r '.head.repo.full_name' <<<"$pr_json")" == "$REPOSITORY" ]]
+          [[ "$(jq -r '.head.ref' <<<"$pr_json")" == "$RUN_BRANCH" ]]
+          [[ "$(jq -r '.head.sha' <<<"$pr_json")" == "$RUN_SHA" ]] || {
+            echo "Dependabot PR changed while verification metadata was being resolved." >&2
+            exit 1
+          }
+
+          mapfile -t artifact_files < <(find "$ARTIFACT_DIRECTORY" -mindepth 1 -maxdepth 1 -type f -print)
+          [[ "${#artifact_files[@]}" -eq 1 ]]
+          [[ "$(basename "${artifact_files[0]}")" == "verification-metadata.xml" ]]
+          [[ ! -L "${artifact_files[0]}" ]]
+          python3 - "$artifact_files[0]" <<'PY'
+          from pathlib import Path
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = Path(sys.argv[1])
+          if path.stat().st_size > 10 * 1024 * 1024:
+              raise SystemExit("Dependency verification metadata exceeds 10 MiB.")
+          raw = path.read_bytes()
+          if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
+              raise SystemExit("Dependency verification metadata must not contain a DTD or entities.")
+          root = ET.fromstring(raw)
+          if root.tag.rsplit("}", 1)[-1] != "verification-metadata":
+              raise SystemExit("Unexpected dependency verification metadata root element.")
+          PY
+
+          cp "${artifact_files[0]}" "$OUTPUT_FILE"
+          {
+            echo "number=$pr_number"
+            echo "head_sha=$RUN_SHA"
+            echo "head_ref=$RUN_BRANCH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out trusted metadata merger
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Merge resolver output with trusted main metadata
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.context.outputs.number }}
+          EXPECTED_SHA: ${{ steps.context.outputs.head_sha }}
+          BASE_METADATA: ${{ runner.temp }}/base-verification-metadata.xml
+          GENERATED_METADATA: ${{ runner.temp }}/verification-metadata.xml
+          PR_METADATA: ${{ runner.temp }}/pr-verification-metadata.xml
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPOSITORY/contents/gradle/verification-metadata.xml?ref=$EXPECTED_SHA" \
+            --jq .content | base64 --decode > "$PR_METADATA"
+          cp gradle/verification-metadata.xml "$BASE_METADATA"
+          python3 scripts/merge-gradle-verification-metadata.py \
+            "$BASE_METADATA" "$GENERATED_METADATA"
+          if cmp --silent "$PR_METADATA" "$BASE_METADATA"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          cp "$BASE_METADATA" gradle/verification-metadata.xml
+          git diff --check
+          files="$(git diff --name-only)"
+          [[ "$files" == "gradle/verification-metadata.xml" ]] || {
+            echo "Trusted metadata merge changed an unexpected file." >&2
+            git diff --name-only >&2
+            exit 1
+          }
+
+          pr_json="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")"
+          [[ "$(jq -r '.head.sha' <<<"$pr_json")" == "$EXPECTED_SHA" ]] || {
+            echo "Dependabot PR changed before metadata commit; refusing to update it." >&2
+            exit 1
+          }
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create verified metadata commit
+        id: commit
+        if: steps.merge.outputs.changed == 'true'
+        uses: iarekylew00t/verified-bot-commit@42a042b0407248f3c0acac00c389e729e3476e86 # v2.3.5
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          ref: ${{ steps.context.outputs.head_ref }}
+          workspace: ${{ github.workspace }}
+          update-local: false
+          message: "chore(deps): update Gradle verification metadata"
+          files: gradle/verification-metadata.xml
+          if-no-commit: info
+
+      - name: Re-run build for verified metadata commit
+        if: steps.merge.outputs.changed == 'true' && steps.commit.outputs.ref != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.context.outputs.head_ref }}
+        shell: bash
+        run: gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"

@@ -87,11 +87,10 @@ jobs:
             echo "Resolver checkout does not match the pull request source revision." >&2
             exit 1
           }
-          # Gradle may regenerate this launcher while resolving through a newer wrapper.
-          # Keep the resolver checkout at the PR revision before checking for other mutations.
-          git restore --worktree -- gradlew.bat
-          git diff --quiet -- || {
-            echo "Dependency resolution modified the checked-out Dependabot revision." >&2
+          # Gradle 9.8 rewrites the generated Windows launcher during dependency resolution.
+          # Reject mutations to every other file in the checked-out Dependabot revision.
+          git diff --quiet -- . ':(exclude)gradlew.bat' || {
+            echo "Dependency resolution modified files other than gradlew.bat." >&2
             git status --short >&2
             exit 1
           }

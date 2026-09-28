@@ -13,10 +13,11 @@ concurrency:
 
 jobs:
   apply:
+    # A maintainer can rerun the resolver, so validate the PR author and source
+    # SHA below instead of the actor who triggered this workflow run.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -48,7 +49,6 @@ jobs:
           set -euo pipefail
           run_json="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID")"
           [[ "$(jq -r '.event' <<<"$run_json")" == "pull_request" ]]
-          [[ "$(jq -r '.actor.login' <<<"$run_json")" == "dependabot[bot]" ]]
           [[ "$(jq -r '.head_repository.full_name' <<<"$run_json")" == "$REPOSITORY" ]]
           [[ "$(jq -r '.head_sha' <<<"$run_json")" == "$RUN_SHA" ]]
           [[ "$(jq -r '.head_branch' <<<"$run_json")" == "$RUN_BRANCH" ]]

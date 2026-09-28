@@ -52,6 +52,19 @@ rootProject.name = "dependency-verification-seed"
 """,
     encoding="utf-8",
 )
+# Resolve the wrapper-matched Kotlin DSL plugin used by this repository's buildSrc.
+(output / "buildSrc").mkdir(exist_ok=True)
+(output / "buildSrc" / "build.gradle.kts").write_text(
+    """plugins {
+    `kotlin-dsl`
+}
+
+repositories {
+    gradlePluginPortal()
+}
+""",
+    encoding="utf-8",
+)
 (output / "build.gradle.kts").write_text(
     "plugins {\n"
     + "\n".join(plugin_lines)

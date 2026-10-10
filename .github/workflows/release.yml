@@ -140,7 +140,7 @@ jobs:
           diff -u "$RUNNER_TEMP/first.sha256" "$RUNNER_TEMP/second.sha256"
 
       - name: Upload release bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-bundle
           path: build/release/${{ steps.version.outputs.value }}
@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload verification reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-preflight-reports
           path: |
